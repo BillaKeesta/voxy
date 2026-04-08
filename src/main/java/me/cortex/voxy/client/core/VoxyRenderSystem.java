@@ -427,18 +427,27 @@ public class VoxyRenderSystem {
         ).mulLocal(makeProjectionMatrix(nearVoxy, 16*3000));
     }*/
 
-    private static Matrix4f computeProjectionMat(Matrix4fc base) {
+    private static float getGameFoV() {
+        var client = Minecraft.getInstance();
+        var gameRenderer = client.gameRenderer;
+        return (float) gameRenderer.getFov(gameRenderer.getMainCamera(), client.getDeltaTracker().getGameTimeDeltaPartialTick(true), true);
+    }
 
-        var proj = new Matrix4f(base);
+    private static Matrix4f computeProjectionMat(Matrix4fc base) {
+        // Capture extra projection transforms injected by vanilla, such as view bobbing.
+        var rawMCProj = Minecraft.getInstance().gameRenderer.getProjectionMatrix(getGameFoV());
+        var extraProjection = rawMCProj.invert(new Matrix4f()).mul(base);
 
         float near = getRenderDistance()<=32.0f?8f:16f;
         near = VoxyClient.disableSodiumChunkRender()?0.1f:near;
 
         float far = 16*3000;
 
-        return proj
-                .m22((far + near) / (near - far))
-                .m32((far+far) * near / (near - far));
+        return extraProjection.mulLocal(
+                new Matrix4f(rawMCProj)
+                        .m22((far + near) / (near - far))
+                        .m32((far+far) * near / (near - far))
+        );
     }
 
     private boolean frexStillHasWork() {
