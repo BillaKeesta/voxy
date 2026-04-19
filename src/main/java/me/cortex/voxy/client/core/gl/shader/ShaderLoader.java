@@ -5,13 +5,10 @@ import net.minecraft.resources.ResourceLocation;
 
 import org.apache.commons.io.IOUtils;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -29,7 +26,7 @@ public class ShaderLoader {
         private static final Pattern IMPORT_PATTERN = Pattern.compile("#import <(?<namespace>.*):(?<path>.*)>");
         public static List<String> parseRoot(ResourceLocation id) {
             List<String> out = new ArrayList<>();
-            for (var line : toLines(loadShaderAsset(id))) {
+            for (var line : loadShaderAsset(id).lines().toList()) {
                 if (line.startsWith("#version")) {
                     continue;
                 } else if (line.startsWith("#import")) {
@@ -44,9 +41,6 @@ public class ShaderLoader {
             return out;
         }
 
-        private static List<String> toLines(String src) {
-            return new BufferedReader(new StringReader(src)).lines().toList();
-        }
         private static String loadShaderAsset(ResourceLocation id) {
             String path = String.format("/assets/%s/shaders/%s", id.getNamespace(), id.getPath());
             try (InputStream in = ShaderLoadingParser.class.getResourceAsStream(path)) {
