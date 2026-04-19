@@ -122,7 +122,7 @@ public class VoxyRenderSystem {
 
             this.worldIn = world;
 
-            this.properties = new RenderProperties(false, false, false);
+            this.properties = RenderProperties.getRenderProperties();
             var backendFactory = getRenderBackendFactory();
             {
                 this.modelService = new ModelBakerySubsystem(world.getMapper());
