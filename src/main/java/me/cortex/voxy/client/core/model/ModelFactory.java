@@ -217,18 +217,6 @@ public class ModelFactory {
 
         int flags = this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer);
 
-        boolean hasDarkenedTextures = (flags&2)!=0;
-        boolean isShaded = (flags&1)!=0;
-        RenderType layer = RenderType.solid();
-        if ((flags&4)!=0) {
-            layer = RenderType.translucent();
-        } else if ((flags&8)!=0) {
-            layer = RenderType.cutout();
-        }
-        if (bake.state.is(BlockTags.LEAVES)) {
-            layer = RenderType.solid();
-        }
-
         {//Create texture data
             long ptr = this.bakeScratchBuffer;
             //long ptr = result.rawData.address;
@@ -250,6 +238,19 @@ public class ModelFactory {
                 }
                 textureData[face] = new ColourDepthTextureData(colour, depth, MODEL_TEXTURE_SIZE, MODEL_TEXTURE_SIZE);
             }
+        }
+
+        boolean hasDarkenedTextures = (flags&2)!=0;
+        boolean isShaded = (flags&1)!=0;
+
+        RenderType layer = RenderType.solid();
+        if ((flags&4)!=0) {
+            layer = RenderType.translucent();
+        } else if ((flags&8)!=0) {
+            layer = RenderType.cutout();
+        }
+        if (bake.state.is(BlockTags.LEAVES)) {
+            layer = RenderType.solid();
         }
 
         var bakeResult = this.processTextureBakeResult(bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer);
