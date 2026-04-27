@@ -13,7 +13,10 @@
     "minecraft.MixinWorld",
     "sable.MixinClientSubLevelFinalizeLighting",
     "sable.MixinPhysicsChunkTicketManager",
-    "sable.MixinSubLevelTrackingSystem"
+    "sable.MixinSubLevelTrackingSystem",
+    "sable.SableSubLevelHoldingChunkMapAccessor",
+    "sable.SableSubLevelStorageAccessor",
+    "sable.SableSubLevelTrackingSystemAccessor"
   ],
   "overwrites": {
     "requireAnnotations": true

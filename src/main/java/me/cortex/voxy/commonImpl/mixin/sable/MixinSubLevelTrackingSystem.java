@@ -20,6 +20,10 @@ public class MixinSubLevelTrackingSystem {
 
     @Inject(method = "shouldLoad", at = @At("HEAD"), cancellable = true, remap = false)
     private void voxy$extendTrackingDistance(Player player, Vector3dc entityPosition, CallbackInfoReturnable<Boolean> cir) {
+        if (SableTrackingRefreshManager.isComputingBaseShouldLoad()) {
+            return;
+        }
+
         if (SableTrackingRefreshManager.shouldKeepExtendedTracking(
                 this.level,
                 player,

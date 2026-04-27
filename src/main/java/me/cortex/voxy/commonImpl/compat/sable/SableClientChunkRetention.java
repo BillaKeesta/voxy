@@ -1,5 +1,9 @@
 package me.cortex.voxy.commonImpl.compat.sable;
 
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -13,14 +17,11 @@ import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.core.SectionPos;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.reflect.Method;
-import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -32,20 +33,19 @@ public final class SableClientChunkRetention {
 
     private static final Map<ClientLevel, RetentionState> RETAINED_CHUNKS = new WeakHashMap<>();
 
-    private static ClientReflection reflection;
+    private static boolean sableUnavailable;
     private static boolean replayingPendingChunkPacket;
 
     private SableClientChunkRetention() {
     }
 
     public static boolean retainChunkIfNeeded(ClientLevel level, ChunkPos chunkPos) {
-        ClientReflection reflection = getReflection();
-        if (reflection == null) {
+        if (sableUnavailable) {
             return false;
         }
 
         try {
-            if (!isChunkProtected(level, chunkPos, reflection, false)) {
+            if (!isChunkProtected(level, chunkPos, false)) {
                 return false;
             }
 
@@ -54,28 +54,33 @@ public final class SableClientChunkRetention {
             state.retainedChunks.add(chunkKey);
             bootstrapChunkIfLoaded(level, state, chunkKey);
             return true;
-        } catch (RuntimeException e) {
-            Logger.error("Disabling Sable client chunk retention after reflective access failed", e);
-            SableClientChunkRetention.reflection = ClientReflection.unavailable();
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+            return false;
+        } catch (RuntimeException | LinkageError e) {
+            Logger.error("Disabling Sable client chunk retention after direct access failed", e);
+            sableUnavailable = true;
             return false;
         }
     }
 
     public static boolean shouldStoreShadowChunk(ClientLevel level, ChunkPos chunkPos) {
-        ClientReflection reflection = getReflection();
-        if (reflection == null) {
+        if (sableUnavailable) {
             return false;
         }
 
         try {
-            if (isSablePlotChunk(level, chunkPos.x, chunkPos.z, reflection)) {
+            if (isSablePlotChunk(level, chunkPos.x, chunkPos.z)) {
                 return false;
             }
 
-            return isChunkProtected(level, chunkPos, reflection, true);
-        } catch (RuntimeException e) {
+            return isChunkProtected(level, chunkPos, true);
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+            return false;
+        } catch (RuntimeException | LinkageError e) {
             Logger.error("Disabling Sable client chunk retention after shadow chunk check failed", e);
-            SableClientChunkRetention.reflection = ClientReflection.unavailable();
+            sableUnavailable = true;
             return false;
         }
     }
@@ -85,22 +90,17 @@ public final class SableClientChunkRetention {
             ClientLevel level,
             ClientboundLevelChunkWithLightPacket packet
     ) {
-        if (replayingPendingChunkPacket || isInStorageRange(level, packet.getX(), packet.getZ())) {
-            return false;
-        }
-
-        ClientReflection reflection = getReflection();
-        if (reflection == null) {
+        if (sableUnavailable || replayingPendingChunkPacket || isInStorageRange(level, packet.getX(), packet.getZ())) {
             return false;
         }
 
         ChunkPos chunkPos = new ChunkPos(packet.getX(), packet.getZ());
         try {
-            if (isSablePlotChunk(level, chunkPos.x, chunkPos.z, reflection)) {
+            if (isSablePlotChunk(level, chunkPos.x, chunkPos.z)) {
                 return false;
             }
 
-            if (isChunkProtected(level, chunkPos, reflection, true)) {
+            if (isChunkProtected(level, chunkPos, true)) {
                 return false;
             }
 
@@ -117,34 +117,41 @@ public final class SableClientChunkRetention {
 
             state.pendingChunkPackets.put(chunkKey, new PendingChunkPacket(packet, level.getGameTime()));
             return true;
-        } catch (RuntimeException e) {
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+            return false;
+        } catch (RuntimeException | LinkageError e) {
             Logger.error("Disabling Sable client chunk retention after pending chunk packet check failed", e);
-            SableClientChunkRetention.reflection = ClientReflection.unavailable();
+            sableUnavailable = true;
             return false;
         }
     }
 
     public static void flushPendingChunkPackets(ClientLevel level) {
+        if (sableUnavailable) {
+            return;
+        }
+
         RetentionState state = RETAINED_CHUNKS.get(level);
-        ClientReflection reflection = getReflection();
-        if (state == null || reflection == null) {
+        if (state == null) {
             return;
         }
 
         try {
-            flushPendingChunkPackets(level, state, collectProtectedChunks(level, reflection, true));
-        } catch (RuntimeException e) {
+            flushPendingChunkPackets(level, state, collectProtectedChunks(level, true));
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+        } catch (RuntimeException | LinkageError e) {
             Logger.error("Disabling Sable client chunk retention after pending chunk flush failed", e);
-            SableClientChunkRetention.reflection = ClientReflection.unavailable();
+            sableUnavailable = true;
             releaseAll(level, state);
             RETAINED_CHUNKS.remove(level);
         }
     }
 
     public static void tick(ClientLevel level) {
-        ClientReflection reflection = getReflection();
         RetentionState state = RETAINED_CHUNKS.get(level);
-        if (reflection == null) {
+        if (sableUnavailable) {
             if (state != null) {
                 releaseAll(level, state);
                 RETAINED_CHUNKS.remove(level);
@@ -165,8 +172,8 @@ public final class SableClientChunkRetention {
         state.nextSweepGameTime = gameTime + RETAINED_CHUNK_SWEEP_INTERVAL_TICKS;
 
         try {
-            LongSet protectedChunks = collectProtectedChunks(level, reflection, false);
-            LongSet readyProtectedChunks = collectProtectedChunks(level, reflection, true);
+            LongSet protectedChunks = collectProtectedChunks(level, false);
+            LongSet readyProtectedChunks = collectProtectedChunks(level, true);
             flushPendingChunkPackets(level, state, readyProtectedChunks);
             prunePendingChunkPackets(state, protectedChunks, gameTime);
 
@@ -199,9 +206,13 @@ public final class SableClientChunkRetention {
                     && copyShadowChunkKeys(level).isEmpty()) {
                 RETAINED_CHUNKS.remove(level);
             }
-        } catch (RuntimeException e) {
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+            releaseAll(level, state);
+            RETAINED_CHUNKS.remove(level);
+        } catch (RuntimeException | LinkageError e) {
             Logger.error("Disabling Sable client chunk retention after retained chunk sweep failed", e);
-            SableClientChunkRetention.reflection = ClientReflection.unavailable();
+            sableUnavailable = true;
             releaseAll(level, state);
             RETAINED_CHUNKS.remove(level);
         }
@@ -284,7 +295,6 @@ public final class SableClientChunkRetention {
     }
 
     private static void releaseChunk(ClientLevel level, ChunkPos chunkPos) {
-        boolean hasRealChunk = getRealChunk(level, chunkPos.toLong()) != null;
         removeShadowChunk(level, chunkPos);
         level.getChunkSource().drop(chunkPos);
         level.queueLightUpdate(() -> clearLight(level, chunkPos));
@@ -343,36 +353,36 @@ public final class SableClientChunkRetention {
         }
     }
 
-    private static boolean isChunkProtected(ClientLevel level, ChunkPos chunkPos, ClientReflection reflection, boolean requireFinalized) {
-        LongSet protectedChunks = collectProtectedChunks(level, reflection, requireFinalized);
+    private static boolean isChunkProtected(ClientLevel level, ChunkPos chunkPos, boolean requireFinalized) {
+        LongSet protectedChunks = collectProtectedChunks(level, requireFinalized);
         return protectedChunks.contains(chunkPos.toLong());
     }
 
-    private static LongSet collectProtectedChunks(ClientLevel level, ClientReflection reflection, boolean requireFinalized) {
+    private static LongSet collectProtectedChunks(ClientLevel level, boolean requireFinalized) {
         LongSet protectedChunks = new LongOpenHashSet();
-        Object container = reflection.getContainer(level);
+        SubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) {
             return protectedChunks;
         }
 
-        for (Object subLevel : reflection.getAllSubLevels(container)) {
-            if (reflection.isRemoved(subLevel)) {
+        for (SubLevel subLevel : container.getAllSubLevels()) {
+            if (subLevel.isRemoved()) {
                 continue;
             }
 
-            if (requireFinalized && !reflection.isFinalized(subLevel)) {
+            if (requireFinalized && !(subLevel instanceof ClientSubLevel clientSubLevel && clientSubLevel.isFinalized())) {
                 continue;
             }
 
-            Object bounds = reflection.getBoundingBox(subLevel);
+            BoundingBox3dc bounds = subLevel.boundingBox();
             if (bounds == null) {
                 continue;
             }
 
-            int minChunkX = ((int) Math.floor(reflection.minX(bounds)) >> 4) - RETAINED_CHUNK_PADDING;
-            int maxChunkX = ((int) Math.floor(reflection.maxX(bounds)) >> 4) + RETAINED_CHUNK_PADDING;
-            int minChunkZ = ((int) Math.floor(reflection.minZ(bounds)) >> 4) - RETAINED_CHUNK_PADDING;
-            int maxChunkZ = ((int) Math.floor(reflection.maxZ(bounds)) >> 4) + RETAINED_CHUNK_PADDING;
+            int minChunkX = ((int) Math.floor(bounds.minX()) >> 4) - RETAINED_CHUNK_PADDING;
+            int maxChunkX = ((int) Math.floor(bounds.maxX()) >> 4) + RETAINED_CHUNK_PADDING;
+            int minChunkZ = ((int) Math.floor(bounds.minZ()) >> 4) - RETAINED_CHUNK_PADDING;
+            int maxChunkZ = ((int) Math.floor(bounds.maxZ()) >> 4) + RETAINED_CHUNK_PADDING;
 
             for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
                 for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
@@ -384,9 +394,9 @@ public final class SableClientChunkRetention {
         return protectedChunks;
     }
 
-    private static boolean isSablePlotChunk(ClientLevel level, int chunkX, int chunkZ, ClientReflection reflection) {
-        Object container = reflection.getContainer(level);
-        return container != null && reflection.inBounds(container, chunkX, chunkZ);
+    private static boolean isSablePlotChunk(ClientLevel level, int chunkX, int chunkZ) {
+        SubLevelContainer container = SubLevelContainer.getContainer(level);
+        return container != null && container.inBounds(chunkX, chunkZ);
     }
 
     private static void bootstrapLoadedProtectedChunks(ClientLevel level, RetentionState state, LongSet protectedChunks) {
@@ -450,37 +460,6 @@ public final class SableClientChunkRetention {
         return chunkCache.voxy$copyShadowChunkKeys();
     }
 
-    private static ClientReflection getReflection() {
-        if (reflection != null) {
-            return reflection.available() ? reflection : null;
-        }
-
-        try {
-            Class<?> containerClass = Class.forName("dev.ryanhcode.sable.api.sublevel.SubLevelContainer");
-            Class<?> subLevelClass = Class.forName("dev.ryanhcode.sable.sublevel.SubLevel");
-            Class<?> clientSubLevelClass = Class.forName("dev.ryanhcode.sable.sublevel.ClientSubLevel");
-            Class<?> boundsClass = Class.forName("dev.ryanhcode.sable.companion.math.BoundingBox3dc");
-
-            reflection = new ClientReflection(
-                    true,
-                    containerClass.getMethod("getContainer", Level.class),
-                    containerClass.getMethod("getAllSubLevels"),
-                    containerClass.getMethod("inBounds", int.class, int.class),
-                    subLevelClass.getMethod("isRemoved"),
-                    clientSubLevelClass.getMethod("isFinalized"),
-                    subLevelClass.getMethod("boundingBox"),
-                    boundsClass.getMethod("minX"),
-                    boundsClass.getMethod("maxX"),
-                    boundsClass.getMethod("minZ"),
-                    boundsClass.getMethod("maxZ")
-            );
-        } catch (ReflectiveOperationException e) {
-            reflection = ClientReflection.unavailable();
-        }
-
-        return reflection.available() ? reflection : null;
-    }
-
     private static final class RetentionState {
         private final LongSet retainedChunks = new LongOpenHashSet();
         private final LongSet bootstrappedChunks = new LongOpenHashSet();
@@ -490,103 +469,5 @@ public final class SableClientChunkRetention {
     }
 
     private record PendingChunkPacket(ClientboundLevelChunkWithLightPacket packet, long queuedAtGameTime) {
-    }
-
-    private record ClientReflection(
-            boolean available,
-            Method getContainer,
-            Method getAllSubLevels,
-            Method inBounds,
-            Method isRemoved,
-            Method isFinalized,
-            Method boundingBox,
-            Method minX,
-            Method maxX,
-            Method minZ,
-            Method maxZ
-    ) {
-        private static ClientReflection unavailable() {
-            return new ClientReflection(false, null, null, null, null, null, null, null, null, null, null);
-        }
-
-        private Object getContainer(Level level) {
-            try {
-                return this.getContainer.invoke(null, level);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private List<?> getAllSubLevels(Object container) {
-            try {
-                return (List<?>) this.getAllSubLevels.invoke(container);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private boolean inBounds(Object container, int chunkX, int chunkZ) {
-            try {
-                return (boolean) this.inBounds.invoke(container, chunkX, chunkZ);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private boolean isRemoved(Object subLevel) {
-            try {
-                return (boolean) this.isRemoved.invoke(subLevel);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private boolean isFinalized(Object subLevel) {
-            try {
-                return (boolean) this.isFinalized.invoke(subLevel);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private Object getBoundingBox(Object subLevel) {
-            try {
-                return this.boundingBox.invoke(subLevel);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double minX(Object bounds) {
-            try {
-                return (double) this.minX.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double maxX(Object bounds) {
-            try {
-                return (double) this.maxX.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double minZ(Object bounds) {
-            try {
-                return (double) this.minZ.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double maxZ(Object bounds) {
-            try {
-                return (double) this.maxZ.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
     }
 }

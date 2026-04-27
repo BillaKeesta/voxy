@@ -2,11 +2,22 @@ package me.cortex.voxy.commonImpl.compat.sable;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.storage.HoldingSubLevel;
+import dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunk;
+import dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunkMap;
+import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelStorage;
+import dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicketManager;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import me.cortex.voxy.common.Logger;
+import me.cortex.voxy.commonImpl.mixin.sable.SableSubLevelHoldingChunkMapAccessor;
+import me.cortex.voxy.commonImpl.mixin.sable.SableSubLevelStorageAccessor;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
@@ -15,8 +26,6 @@ import net.minecraft.world.level.ChunkPos;
 
 import java.io.IOException;
 import java.io.Reader;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.channels.FileChannel;
@@ -26,7 +35,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.regex.Matcher;
@@ -47,7 +55,7 @@ public final class SableLodChunkManager {
 
     private static final ConfigSnapshot DISABLED_CONFIG = new ConfigSnapshot(false, 0.0, Long.MIN_VALUE);
 
-    private static SableReflection reflection;
+    private static boolean sableUnavailable;
     private static ConfigSnapshot cachedConfig = DISABLED_CONFIG;
     private static long nextConfigRefreshTick;
     private static final Map<String, HoldingChunkIndex> holdingChunkIndexCache = new HashMap<>();
@@ -57,8 +65,7 @@ public final class SableLodChunkManager {
     }
 
     public static void updateTickets(ServerLevel level, LongSet trackedChunks, LongSet trackedHoldingChunks) {
-        SableReflection reflection = getReflection();
-        if (reflection == null) {
+        if (sableUnavailable) {
             clearTickets(level, trackedChunks, trackedHoldingChunks);
             return;
         }
@@ -70,40 +77,39 @@ public final class SableLodChunkManager {
         }
 
         try {
-            Object container = reflection.getContainer(level);
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
             if (container == null) {
                 clearTickets(level, trackedChunks, trackedHoldingChunks);
                 return;
             }
 
-            List<?> subLevels = reflection.getAllSubLevels(container);
             if (level.players().isEmpty()) {
                 clearTickets(level, trackedChunks, trackedHoldingChunks);
                 return;
             }
 
-            Object holdingChunkMap = reflection.getHoldingChunkMap(container);
+            SubLevelHoldingChunkMap holdingChunkMap = container.getHoldingChunkMap();
             LongSet desiredChunks = new LongOpenHashSet();
             LongSet desiredHoldingChunks = new LongOpenHashSet();
             double maxHorizontalDistanceSquared = config.horizontalRenderDistanceBlocks() * config.horizontalRenderDistanceBlocks();
             double holdingChunkWakeDistance = config.horizontalRenderDistanceBlocks() + getHoldingChunkWakePadding(level, config);
             double holdingChunkWakeDistanceSquared = holdingChunkWakeDistance * holdingChunkWakeDistance;
 
-            for (Object subLevel : subLevels) {
-                if (reflection.isRemoved(subLevel)) {
+            for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+                if (subLevel.isRemoved()) {
                     continue;
                 }
 
-                Object bounds = reflection.getBoundingBox(subLevel);
-                if (bounds == null || !isWithinHorizontalDistance(level, bounds, reflection, maxHorizontalDistanceSquared)) {
+                BoundingBox3dc bounds = subLevel.boundingBox();
+                if (bounds == null || !isWithinHorizontalDistance(level, bounds, maxHorizontalDistanceSquared)) {
                     continue;
                 }
 
-                addChunkBounds(bounds, reflection, desiredChunks);
+                addChunkBounds(bounds, desiredChunks);
             }
 
             if (holdingChunkMap != null) {
-                updateHoldingChunkLoads(level, reflection, holdingChunkMap, desiredChunks, desiredHoldingChunks, trackedHoldingChunks, maxHorizontalDistanceSquared, holdingChunkWakeDistanceSquared);
+                updateHoldingChunkLoads(level, holdingChunkMap, desiredChunks, desiredHoldingChunks, trackedHoldingChunks, maxHorizontalDistanceSquared, holdingChunkWakeDistanceSquared);
             } else {
                 trackedHoldingChunks.clear();
             }
@@ -111,9 +117,12 @@ public final class SableLodChunkManager {
             removeStaleTickets(level, trackedChunks, desiredChunks);
             addMissingTickets(level, trackedChunks, desiredChunks);
             activeChunkLoads.put(level, new LongOpenHashSet(desiredChunks));
-        } catch (RuntimeException e) {
-            Logger.error("Disabling Voxy Sable LOD compatibility after reflective access failed", e);
-            reflection = SableReflection.unavailable();
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+            clearTickets(level, trackedChunks, trackedHoldingChunks);
+        } catch (RuntimeException | LinkageError e) {
+            Logger.error("Disabling Voxy Sable LOD compatibility after direct access failed", e);
+            sableUnavailable = true;
             clearTickets(level, trackedChunks, trackedHoldingChunks);
         }
     }
@@ -121,8 +130,7 @@ public final class SableLodChunkManager {
     public static void clearTickets(ServerLevel level, LongSet trackedChunks, LongSet trackedHoldingChunks) {
         activeChunkLoads.remove(level);
 
-        if (trackedChunks.isEmpty()) {
-        } else {
+        if (!trackedChunks.isEmpty()) {
             LongIterator iterator = trackedChunks.iterator();
             while (iterator.hasNext()) {
                 long chunk = iterator.nextLong();
@@ -135,15 +143,14 @@ public final class SableLodChunkManager {
             return;
         }
 
-        SableReflection reflection = getReflection();
-        if (reflection == null) {
+        if (sableUnavailable) {
             trackedHoldingChunks.clear();
             return;
         }
 
         try {
-            Object container = reflection.getContainer(level);
-            Object holdingChunkMap = container != null ? reflection.getHoldingChunkMap(container) : null;
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+            SubLevelHoldingChunkMap holdingChunkMap = container != null ? container.getHoldingChunkMap() : null;
 
             if (holdingChunkMap == null) {
                 trackedHoldingChunks.clear();
@@ -153,10 +160,13 @@ public final class SableLodChunkManager {
             LongIterator iterator = trackedHoldingChunks.iterator();
             while (iterator.hasNext()) {
                 long chunk = iterator.nextLong();
-                reflection.updateHoldingChunkStatus(holdingChunkMap, new ChunkPos(chunk), false);
+                holdingChunkMap.updateChunkStatus(new ChunkPos(chunk), false);
                 iterator.remove();
             }
-        } catch (RuntimeException e) {
+        } catch (NoClassDefFoundError e) {
+            sableUnavailable = true;
+            trackedHoldingChunks.clear();
+        } catch (RuntimeException | LinkageError e) {
             Logger.error("Failed clearing Voxy Sable holding chunk loads", e);
             trackedHoldingChunks.clear();
         }
@@ -211,16 +221,15 @@ public final class SableLodChunkManager {
     }
 
     private static void updateHoldingChunkLoads(ServerLevel level,
-                                                SableReflection reflection,
-                                                Object holdingChunkMap,
+                                                SubLevelHoldingChunkMap holdingChunkMap,
                                                 LongSet desiredChunks,
                                                 LongSet desiredHoldingChunks,
                                                 LongSet trackedHoldingChunks,
                                                 double maxHorizontalDistanceSquared,
                                                 double holdingChunkWakeDistanceSquared) {
         LongSet knownHoldingChunks = new LongOpenHashSet();
-        knownHoldingChunks.addAll(getHoldingChunkIndex(reflection, holdingChunkMap, level.getGameTime()).holdingChunks());
-        reflection.addLoadedHoldingChunkKeys(holdingChunkMap, knownHoldingChunks);
+        knownHoldingChunks.addAll(getHoldingChunkIndex(holdingChunkMap, level.getGameTime()).holdingChunks());
+        addLoadedHoldingChunkKeys(holdingChunkMap, knownHoldingChunks);
 
         LongIterator iterator = knownHoldingChunks.iterator();
         while (iterator.hasNext()) {
@@ -233,28 +242,27 @@ public final class SableLodChunkManager {
             desiredHoldingChunks.add(chunkKey);
 
             if (trackedHoldingChunks.add(chunkKey)) {
-                reflection.updateHoldingChunkStatus(holdingChunkMap, chunkPos, true);
+                holdingChunkMap.updateChunkStatus(chunkPos, true);
             }
 
-            Object holdingChunk = reflection.getOrLoadHoldingChunk(holdingChunkMap, chunkPos);
+            SubLevelHoldingChunk holdingChunk = getOrLoadHoldingChunk(holdingChunkMap, chunkPos);
             if (holdingChunk == null) {
                 continue;
             }
 
-            for (Object holdingSubLevel : reflection.getLoadedHoldingSubLevels(holdingChunk)) {
-                Object bounds = reflection.getHoldingSubLevelBounds(holdingSubLevel);
-                if (bounds != null && isWithinHorizontalDistance(level, bounds, reflection, maxHorizontalDistanceSquared)) {
-                    addChunkBounds(bounds, reflection, desiredChunks);
+            for (HoldingSubLevel holdingSubLevel : holdingChunk.getLoadedHoldingSubLevels()) {
+                BoundingBox3dc bounds = holdingSubLevel.data().bounds();
+                if (bounds != null && isWithinHorizontalDistance(level, bounds, maxHorizontalDistanceSquared)) {
+                    addChunkBounds(bounds, desiredChunks);
                 }
             }
         }
 
-        removeStaleHoldingChunkLoads(level, reflection, holdingChunkMap, trackedHoldingChunks, desiredHoldingChunks);
+        removeStaleHoldingChunkLoads(level, holdingChunkMap, trackedHoldingChunks, desiredHoldingChunks);
     }
 
     private static void removeStaleHoldingChunkLoads(ServerLevel level,
-                                                     SableReflection reflection,
-                                                     Object holdingChunkMap,
+                                                     SubLevelHoldingChunkMap holdingChunkMap,
                                                      LongSet trackedHoldingChunks,
                                                      LongSet desiredHoldingChunks) {
         LongIterator iterator = trackedHoldingChunks.iterator();
@@ -265,18 +273,18 @@ public final class SableLodChunkManager {
             }
 
             ChunkPos chunkPos = new ChunkPos(chunk);
-            if (!reflection.isChunkLoadedEnough(level, chunkPos.x, chunkPos.z)) {
-                reflection.updateHoldingChunkStatus(holdingChunkMap, chunkPos, false);
+            if (!PhysicsChunkTicketManager.isChunkLoadedEnough(level, chunkPos.x, chunkPos.z)) {
+                holdingChunkMap.updateChunkStatus(chunkPos, false);
             }
             iterator.remove();
         }
     }
 
-    private static void addChunkBounds(Object bounds, SableReflection reflection, LongSet desiredChunks) {
-        int minChunkX = Mth.floor(reflection.minX(bounds)) >> 4;
-        int maxChunkX = Mth.floor(reflection.maxX(bounds)) >> 4;
-        int minChunkZ = Mth.floor(reflection.minZ(bounds)) >> 4;
-        int maxChunkZ = Mth.floor(reflection.maxZ(bounds)) >> 4;
+    private static void addChunkBounds(BoundingBox3dc bounds, LongSet desiredChunks) {
+        int minChunkX = Mth.floor(bounds.minX()) >> 4;
+        int maxChunkX = Mth.floor(bounds.maxX()) >> 4;
+        int minChunkZ = Mth.floor(bounds.minZ()) >> 4;
+        int maxChunkZ = Mth.floor(bounds.maxZ()) >> 4;
 
         for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
             for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
@@ -285,11 +293,11 @@ public final class SableLodChunkManager {
         }
     }
 
-    private static boolean isWithinHorizontalDistance(ServerLevel level, Object bounds, SableReflection reflection, double maxHorizontalDistanceSquared) {
-        double minX = reflection.minX(bounds);
-        double maxX = reflection.maxX(bounds);
-        double minZ = reflection.minZ(bounds);
-        double maxZ = reflection.maxZ(bounds);
+    private static boolean isWithinHorizontalDistance(ServerLevel level, BoundingBox3dc bounds, double maxHorizontalDistanceSquared) {
+        double minX = bounds.minX();
+        double maxX = bounds.maxX();
+        double minZ = bounds.minZ();
+        double maxZ = bounds.maxZ();
 
         for (var player : level.players()) {
             double dx = distanceToRange(player.getX(), minX, maxX);
@@ -393,8 +401,8 @@ public final class SableLodChunkManager {
         return root.get(key).getAsDouble();
     }
 
-    private static HoldingChunkIndex getHoldingChunkIndex(SableReflection reflection, Object holdingChunkMap, long gameTime) {
-        Path folder = reflection.getHoldingStorageFolder(holdingChunkMap);
+    private static HoldingChunkIndex getHoldingChunkIndex(SubLevelHoldingChunkMap holdingChunkMap, long gameTime) {
+        Path folder = getHoldingStorageFolder(holdingChunkMap);
         String key = folder.toAbsolutePath().normalize().toString();
         HoldingChunkIndex existing = holdingChunkIndexCache.get(key);
         if (existing != null && gameTime < existing.nextRefreshTick()) {
@@ -457,222 +465,23 @@ public final class SableLodChunkManager {
         }
     }
 
-    private static SableReflection getReflection() {
-        if (reflection != null) {
-            return reflection.available() ? reflection : null;
-        }
+    private static void addLoadedHoldingChunkKeys(SubLevelHoldingChunkMap holdingChunkMap, LongSet knownHoldingChunks) {
+        Long2ObjectMap<?> loadedHoldingChunks = ((SableSubLevelHoldingChunkMapAccessor) holdingChunkMap).voxy$getLoadedHoldingChunks();
+        knownHoldingChunks.addAll(loadedHoldingChunks.keySet());
+    }
 
-        try {
-            Class<?> containerClass = Class.forName("dev.ryanhcode.sable.api.sublevel.SubLevelContainer");
-            Class<?> serverContainerClass = Class.forName("dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer");
-            Class<?> subLevelClass = Class.forName("dev.ryanhcode.sable.sublevel.SubLevel");
-            Class<?> boundsClass = Class.forName("dev.ryanhcode.sable.companion.math.BoundingBox3dc");
-            Class<?> holdingChunkMapClass = Class.forName("dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunkMap");
-            Class<?> holdingChunkClass = Class.forName("dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunk");
-            Class<?> holdingSubLevelClass = Class.forName("dev.ryanhcode.sable.sublevel.storage.HoldingSubLevel");
-            Class<?> subLevelDataClass = Class.forName("dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData");
-            Class<?> subLevelStorageClass = Class.forName("dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelStorage");
-            Class<?> physicsChunkTicketManagerClass = Class.forName("dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicketManager");
+    private static SubLevelHoldingChunk getOrLoadHoldingChunk(SubLevelHoldingChunkMap holdingChunkMap, ChunkPos chunkPos) {
+        return ((SableSubLevelHoldingChunkMapAccessor) holdingChunkMap).voxy$invokeGetOrLoadHoldingChunk(chunkPos, false);
+    }
 
-            Method getOrLoadHoldingChunk = holdingChunkMapClass.getDeclaredMethod("getOrLoadHoldingChunk", ChunkPos.class, boolean.class);
-            getOrLoadHoldingChunk.setAccessible(true);
-            Field loadedHoldingChunks = holdingChunkMapClass.getDeclaredField("loadedHoldingChunks");
-            loadedHoldingChunks.setAccessible(true);
-            Field storageFolder = subLevelStorageClass.getDeclaredField("folder");
-            storageFolder.setAccessible(true);
-            reflection = new SableReflection(
-                    true,
-                    containerClass.getMethod("getContainer", ServerLevel.class),
-                    containerClass.getMethod("getAllSubLevels"),
-                    serverContainerClass.getMethod("getHoldingChunkMap"),
-                    subLevelClass.getMethod("isRemoved"),
-                    subLevelClass.getMethod("boundingBox"),
-                    boundsClass.getMethod("minX"),
-                    boundsClass.getMethod("maxX"),
-                    boundsClass.getMethod("minZ"),
-                    boundsClass.getMethod("maxZ"),
-                    holdingChunkMapClass.getMethod("updateChunkStatus", ChunkPos.class, boolean.class),
-                    getOrLoadHoldingChunk,
-                    loadedHoldingChunks,
-                    holdingChunkMapClass.getMethod("getStorage"),
-                    storageFolder,
-                    holdingChunkClass.getMethod("getLoadedHoldingSubLevels"),
-                    holdingSubLevelClass.getMethod("data"),
-                    subLevelDataClass.getMethod("bounds"),
-                    physicsChunkTicketManagerClass.getMethod("isChunkLoadedEnough", ServerLevel.class, int.class, int.class)
-            );
-        } catch (ReflectiveOperationException e) {
-            reflection = SableReflection.unavailable();
-        }
-
-        return reflection.available() ? reflection : null;
+    private static Path getHoldingStorageFolder(SubLevelHoldingChunkMap holdingChunkMap) {
+        SubLevelStorage storage = holdingChunkMap.getStorage();
+        return ((SableSubLevelStorageAccessor) storage).voxy$getFolder();
     }
 
     private record ConfigSnapshot(boolean enabled, double horizontalRenderDistanceBlocks, long lastModifiedMillis) {
     }
 
     private record HoldingChunkIndex(LongSet holdingChunks, long nextRefreshTick) {
-    }
-
-    private record SableReflection(
-            boolean available,
-            Method getContainer,
-            Method getAllSubLevels,
-            Method getHoldingChunkMap,
-            Method isRemoved,
-            Method boundingBox,
-            Method minX,
-            Method maxX,
-            Method minZ,
-            Method maxZ,
-            Method updateChunkStatus,
-            Method getOrLoadHoldingChunk,
-            Field loadedHoldingChunks,
-            Method getStorage,
-            Field storageFolder,
-            Method getLoadedHoldingSubLevels,
-            Method holdingSubLevelData,
-            Method subLevelDataBounds,
-            Method isChunkLoadedEnough
-    ) {
-        private static SableReflection unavailable() {
-            return new SableReflection(false, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
-        }
-
-        private Object getContainer(ServerLevel level) {
-            try {
-                return this.getContainer.invoke(null, level);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private Object getHoldingChunkMap(Object container) {
-            try {
-                return this.getHoldingChunkMap.invoke(container);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        @SuppressWarnings("unchecked")
-        private List<?> getAllSubLevels(Object container) {
-            try {
-                return (List<?>) this.getAllSubLevels.invoke(container);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private boolean isRemoved(Object subLevel) {
-            try {
-                return (boolean) this.isRemoved.invoke(subLevel);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private Object getBoundingBox(Object subLevel) {
-            try {
-                return this.boundingBox.invoke(subLevel);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double minX(Object bounds) {
-            try {
-                return (double) this.minX.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double maxX(Object bounds) {
-            try {
-                return (double) this.maxX.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double minZ(Object bounds) {
-            try {
-                return (double) this.minZ.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private double maxZ(Object bounds) {
-            try {
-                return (double) this.maxZ.invoke(bounds);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private void updateHoldingChunkStatus(Object holdingChunkMap, ChunkPos chunkPos, boolean loaded) {
-            try {
-                this.updateChunkStatus.invoke(holdingChunkMap, chunkPos, loaded);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private Object getOrLoadHoldingChunk(Object holdingChunkMap, ChunkPos chunkPos) {
-            try {
-                return this.getOrLoadHoldingChunk.invoke(holdingChunkMap, chunkPos, false);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        @SuppressWarnings("unchecked")
-        private void addLoadedHoldingChunkKeys(Object holdingChunkMap, LongSet knownHoldingChunks) {
-            try {
-                Object loaded = this.loadedHoldingChunks.get(holdingChunkMap);
-                if (loaded instanceof Long2ObjectMap<?> loadedHoldingChunks) {
-                    knownHoldingChunks.addAll(loadedHoldingChunks.keySet());
-                }
-            } catch (IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private Path getHoldingStorageFolder(Object holdingChunkMap) {
-            try {
-                Object storage = this.getStorage.invoke(holdingChunkMap);
-                return (Path) this.storageFolder.get(storage);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        @SuppressWarnings("unchecked")
-        private Iterable<?> getLoadedHoldingSubLevels(Object holdingChunk) {
-            try {
-                return (Iterable<?>) this.getLoadedHoldingSubLevels.invoke(holdingChunk);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private Object getHoldingSubLevelBounds(Object holdingSubLevel) {
-            try {
-                Object data = this.holdingSubLevelData.invoke(holdingSubLevel);
-                return this.subLevelDataBounds.invoke(data);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        private boolean isChunkLoadedEnough(ServerLevel level, int chunkX, int chunkZ) {
-            try {
-                return (boolean) this.isChunkLoadedEnough.invoke(null, level, chunkX, chunkZ);
-            } catch (ReflectiveOperationException e) {
-                throw new RuntimeException(e);
-            }
-        }
     }
 }
