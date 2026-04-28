@@ -12,6 +12,8 @@
     "minecraft.MixinServerLevel",
     "minecraft.MixinWorld",
     "sable.MixinClientSubLevelFinalizeLighting",
+    "sable.MixinSableFlywheelCompatDebug",
+    "sable.MixinSableSodiumRenderDataDebug",
     "sable.MixinPhysicsChunkTicketManager",
     "sable.MixinSubLevelTrackingSystem",
     "sable.SableSubLevelHoldingChunkMapAccessor",

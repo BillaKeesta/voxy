@@ -6,6 +6,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import me.cortex.voxy.client.ICheekyClientChunkCache;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.commonImpl.compat.sable.SableLightingDebug;
 import me.cortex.voxy.commonImpl.compat.sable.SableClientChunkRetention;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
 import net.fabricmc.loader.api.FabricLoader;
@@ -125,12 +126,14 @@ public class MixinClientChunkCache implements ICheekyClientChunkCache {
         }
 
         LevelChunk chunk = this.voxy$getShadowChunk(x, z);
-        if (!voxy$isValidChunk(chunk, x, z)) {
+        boolean reused = voxy$isValidChunk(chunk, x, z);
+        if (!reused) {
             chunk = new LevelChunk(this.level, chunkPos);
         }
 
         chunk.replaceWithPacketData(buffer, heightmaps, blockEntitiesConsumer);
         this.voxy$putShadowChunk(chunk);
+        SableLightingDebug.shadowStored(x, z, reused);
         this.level.onChunkLoaded(chunkPos);
         cir.setReturnValue(chunk);
     }

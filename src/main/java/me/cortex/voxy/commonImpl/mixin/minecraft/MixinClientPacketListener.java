@@ -28,6 +28,15 @@ public class MixinClientPacketListener {
         }
     }
 
+    @Inject(method = "handleLevelChunkWithLight", at = @At("TAIL"))
+    private void voxy$ingestSableShadowChunkLighting(ClientboundLevelChunkWithLightPacket packet, CallbackInfo ci) {
+        if (this.level == null) {
+            return;
+        }
+
+        SableClientChunkRetention.ingestShadowChunkFromPacket(this.level, packet);
+    }
+
     @Inject(
             method = "handleForgetLevelChunk",
             at = @At(
