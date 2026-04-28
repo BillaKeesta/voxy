@@ -1,7 +1,5 @@
 package me.cortex.voxy.commonImpl.compat.sable;
 
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
@@ -10,30 +8,18 @@ import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import me.cortex.voxy.common.Logger;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
 
-import java.io.IOException;
-import java.io.Reader;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Comparator;
 
 public final class SableLodChunkManager {
-    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("voxy-config.json");
     private static final TicketType<ChunkPos> VOXY_SABLE_LOD_TICKET = TicketType.create("voxy_sable_lod", Comparator.comparingLong(ChunkPos::toLong));
     private static final int TICKET_DISTANCE = 2;
-    private static final int CONFIG_REFRESH_TICKS = 20;
-    private static final double BLOCKS_PER_SECTION_RENDER_DISTANCE = 512.0;
-
-    private static final ConfigSnapshot DISABLED_CONFIG = new ConfigSnapshot(false, 0.0, Long.MIN_VALUE);
 
     private static boolean sableUnavailable;
-    private static ConfigSnapshot cachedConfig = DISABLED_CONFIG;
-    private static long nextConfigRefreshTick;
 
     private SableLodChunkManager() {
     }
@@ -49,8 +35,8 @@ public final class SableLodChunkManager {
             return;
         }
 
-        ConfigSnapshot config = getConfig(level.getGameTime());
-        if (!config.enabled()) {
+        double horizontalRenderDistanceBlocks = SableContraptionRenderDistance.getRangeBlocks(level);
+        if (horizontalRenderDistanceBlocks <= 0.0) {
             clearTickets(level, trackedChunks);
             return;
         }
@@ -68,7 +54,7 @@ public final class SableLodChunkManager {
             }
 
             LongSet desiredChunks = new LongOpenHashSet();
-            double maxHorizontalDistanceSquared = config.horizontalRenderDistanceBlocks() * config.horizontalRenderDistanceBlocks();
+            double maxHorizontalDistanceSquared = horizontalRenderDistanceBlocks * horizontalRenderDistanceBlocks;
 
             for (ServerSubLevel subLevel : container.getAllSubLevels()) {
                 if (subLevel.isRemoved()) {
@@ -170,65 +156,5 @@ public final class SableLodChunkManager {
             return value - max;
         }
         return 0.0;
-    }
-
-    private static ConfigSnapshot getConfig(long gameTime) {
-        if (gameTime < nextConfigRefreshTick) {
-            return cachedConfig;
-        }
-        nextConfigRefreshTick = gameTime + CONFIG_REFRESH_TICKS;
-
-        long lastModified;
-        try {
-            lastModified = Files.exists(CONFIG_PATH) ? Files.getLastModifiedTime(CONFIG_PATH).toMillis() : Long.MIN_VALUE;
-        } catch (IOException e) {
-            Logger.error("Failed to stat Voxy config for Sable LOD compatibility", e);
-            return cachedConfig;
-        }
-
-        if (cachedConfig.lastModifiedMillis() == lastModified) {
-            return cachedConfig;
-        }
-
-        cachedConfig = loadConfig(lastModified);
-        return cachedConfig;
-    }
-
-    private static ConfigSnapshot loadConfig(long lastModified) {
-        if (!Files.exists(CONFIG_PATH)) {
-            return new ConfigSnapshot(true, 16.0 * BLOCKS_PER_SECTION_RENDER_DISTANCE, lastModified);
-        }
-
-        try (Reader reader = Files.newBufferedReader(CONFIG_PATH)) {
-            JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
-            boolean enabled = getBoolean(root, "enabled", true) && getBoolean(root, "enable_rendering", true);
-            double sectionRenderDistance = getDouble(root, "section_render_distance", 16.0);
-
-            if (!enabled || sectionRenderDistance <= 0.0) {
-                return new ConfigSnapshot(false, 0.0, lastModified);
-            }
-
-            return new ConfigSnapshot(true, sectionRenderDistance * BLOCKS_PER_SECTION_RENDER_DISTANCE, lastModified);
-        } catch (Exception e) {
-            Logger.error("Failed to load Voxy config for Sable LOD compatibility", e);
-            return new ConfigSnapshot(false, 0.0, lastModified);
-        }
-    }
-
-    private static boolean getBoolean(JsonObject root, String key, boolean fallback) {
-        if (!root.has(key) || root.get(key).isJsonNull()) {
-            return fallback;
-        }
-        return root.get(key).getAsBoolean();
-    }
-
-    private static double getDouble(JsonObject root, String key, double fallback) {
-        if (!root.has(key) || root.get(key).isJsonNull()) {
-            return fallback;
-        }
-        return root.get(key).getAsDouble();
-    }
-
-    private record ConfigSnapshot(boolean enabled, double horizontalRenderDistanceBlocks, long lastModifiedMillis) {
     }
 }

@@ -9,7 +9,8 @@
     "chunky.MixinFabricWorld",
     "minecraft.MixinServerLevel",
     "minecraft.MixinWorld",
-    "sable.MixinClientSubLevelFinalizeLighting"
+    "sable.MixinClientSubLevelFinalizeLighting",
+    "sable.MixinSubLevelTrackingSystem"
   ],
   "overwrites": {
     "requireAnnotations": true

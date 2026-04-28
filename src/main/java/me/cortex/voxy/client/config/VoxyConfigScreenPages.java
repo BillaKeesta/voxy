@@ -11,6 +11,7 @@ import net.caffeinemc.mods.sodium.client.gui.options.*;
 import net.caffeinemc.mods.sodium.client.gui.options.control.CyclingControl;
 import net.caffeinemc.mods.sodium.client.gui.options.control.SliderControl;
 import net.caffeinemc.mods.sodium.client.gui.options.control.TickBoxControl;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
@@ -32,6 +33,7 @@ public abstract class VoxyConfigScreenPages {
     public static OptionPage page() {
         List<OptionGroup> groups = new ArrayList<>();
         VoxyConfig storage = VoxyConfig.CONFIG;
+        boolean sableInstalled = FabricLoader.getInstance().isModLoaded("sable");
 
         //General
         groups.add(OptionGroup.createBuilder()
@@ -179,6 +181,19 @@ public abstract class VoxyConfigScreenPages {
                         .build()
                 ).build()
         );
+
+        if (sableInstalled) {
+            groups.add(OptionGroup.createBuilder()
+                .add(OptionImpl.createBuilder(int.class, storage)
+                        .setName(Component.translatable("voxy.config.general.simulated_contraption_render_distance"))
+                        .setTooltip(Component.translatable("voxy.config.general.simulated_contraption_render_distance.tooltip"))
+                        .setControl(opt -> new SliderControl(opt, 0, 100, 1, v -> Component.literal(v + "%")))
+                        .setBinding((s, v) -> s.simulatedContraptionRenderDistancePercent = v, s -> s.simulatedContraptionRenderDistancePercent)
+                        .setImpact(OptionImpact.MEDIUM)
+                        .build()
+                ).build()
+            );
+        }
         return new OptionPage(Component.translatable("voxy.config.title"), ImmutableList.copyOf(groups));
     }
 

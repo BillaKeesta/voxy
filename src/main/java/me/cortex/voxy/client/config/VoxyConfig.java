@@ -3,6 +3,7 @@ package me.cortex.voxy.client.config;
 import com.google.gson.FieldNamingPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
 
 import me.cortex.voxy.client.core.SSAO;
 import me.cortex.voxy.common.Logger;
@@ -31,6 +32,7 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
     public float sectionRenderDistance = 16;
+    public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 64;
     public boolean renderVanillaFog = true;
@@ -85,7 +87,11 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
         }
 
         try {
-            Files.writeString(getConfigPath(), GSON.toJson(this));
+            JsonObject json = GSON.toJsonTree(this).getAsJsonObject();
+            if (!FabricLoader.getInstance().isModLoaded("sable")) {
+                json.remove("simulated_contraption_render_distance_percent");
+            }
+            Files.writeString(getConfigPath(), GSON.toJson(json));
         } catch (IOException e) {
             Logger.error("Failed to write config file", e);
         }
