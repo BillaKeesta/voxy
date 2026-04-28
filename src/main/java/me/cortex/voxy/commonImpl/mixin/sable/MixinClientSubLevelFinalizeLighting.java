@@ -8,6 +8,7 @@ import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
+import me.cortex.voxy.commonImpl.compat.sable.SableClientSkyLightCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
@@ -50,7 +51,8 @@ public class MixinClientSubLevelFinalizeLighting {
             return;
         }
 
-        int fallbackSkyLight = voxy$getChunkBackedSubLevelSkyLight(this.getLevel(), pose, this.boundingBox());
+        ClientLevel level = this.getLevel();
+        int fallbackSkyLight = voxy$getChunkBackedSubLevelSkyLight(level, pose, this.boundingBox());
         if (fallbackSkyLight > 0) {
             cir.setReturnValue(fallbackSkyLight);
         }
@@ -58,20 +60,25 @@ public class MixinClientSubLevelFinalizeLighting {
 
     @Unique
     private static int voxy$getChunkBackedSubLevelSkyLight(ClientLevel level, Pose3dc pose, @Nullable BoundingBox3dc bounds) {
-        if (voxy$skyLightFallbackUnavailable || bounds == null) {
+        if (voxy$skyLightFallbackUnavailable) {
             return -1;
         }
 
         try {
-            int skyLight = -1;
-            if (bounds.volume() < 9.0D) {
+            int skyLight;
+            if (bounds == null || bounds.volume() < 9.0D) {
                 var position = pose.position();
-                skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, position.x(), position.y(), position.z()));
-                skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() + 1.0D, position.z()));
-                skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() - 1.0D, position.z()));
+                skyLight = voxy$sampleChunkBackedSkyLight(level, position.x(), position.y(), position.z());
+                if (skyLight == 0) {
+                    skyLight = voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() + 1.0D, position.z());
+                }
+                if (skyLight == 0) {
+                    skyLight = voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() - 1.0D, position.z());
+                }
             } else {
                 Vector3d center = bounds.center(new Vector3d());
                 double sampleY = center.y() + 0.1D;
+                skyLight = 0;
                 skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, center.x(), sampleY, center.z()));
                 skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, bounds.minX(), sampleY, bounds.minZ()));
                 skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, bounds.maxX(), sampleY, bounds.minZ()));
@@ -99,6 +106,11 @@ public class MixinClientSubLevelFinalizeLighting {
 
         if (chunkCache.voxy$cheekyGetChunk(chunkX, chunkZ) != null) {
             return level.getBrightness(LightLayer.SKY, pos);
+        }
+
+        int cachedSkyLight = SableClientSkyLightCache.getSkyLight(level, pos);
+        if (cachedSkyLight >= 0) {
+            return cachedSkyLight;
         }
 
         return voxy$readVoxySkyLight(level, pos);

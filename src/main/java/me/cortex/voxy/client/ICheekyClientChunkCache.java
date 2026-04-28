@@ -6,4 +6,6 @@ import org.jetbrains.annotations.Nullable;
 public interface ICheekyClientChunkCache {
     @Nullable
     LevelChunk voxy$cheekyGetChunk(int x, int z);
+
+    boolean voxy$isInStorageRange(int x, int z);
 }
