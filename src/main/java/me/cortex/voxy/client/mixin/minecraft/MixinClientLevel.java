@@ -5,7 +5,6 @@ import me.cortex.voxy.common.world.service.VoxelIngestService;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.VoxyInstance;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
-import me.cortex.voxy.commonImpl.compat.sable.SableClientChunkRetention;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.ClientPacketListener;
@@ -70,18 +69,15 @@ public abstract class MixinClientLevel {
         }
 
         var sectionPos = SectionPos.of(pos);
-        boolean retainedChunk = SableClientChunkRetention.isChunkRetained(self, sectionPos.chunk());
         int x = pos.getX()&15;
         int y = pos.getY()&15;
         int z = pos.getZ()&15;
         boolean borderChange = x == 0 || x==15 || y==0 || y==15 || z==0||z==15;
 
-        if (!retainedChunk) {
-            //TODO: is this _really_ needed, we should have enough processing power to not need todo it if its only a
-            // block removal
-            if (!updated.isAir()) return;
-            if (!borderChange) return;
-        }
+        //TODO: is this _really_ needed, we should have enough processing power to not need todo it if its only a
+        // block removal
+        if (!updated.isAir()) return;
+        if (!borderChange) return;
 
         this.voxy$ingestSection(wi, self, sectionPos);
 
