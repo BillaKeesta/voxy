@@ -16,14 +16,16 @@ import java.util.function.BooleanSupplier;
 public abstract class MixinServerLevel {
     @Unique
     private final LongSet voxy$sableTrackedChunks = new LongOpenHashSet();
+    @Unique
+    private final LongSet voxy$sableTrackedHoldingChunks = new LongOpenHashSet();
 
     @Inject(method = "tick(Ljava/util/function/BooleanSupplier;)V", at = @At("HEAD"))
     private void voxy$keepSableSublevelsLoaded(BooleanSupplier shouldKeepTicking, CallbackInfo ci) {
-        SableLodChunkManager.updateTickets((ServerLevel) (Object) this, this.voxy$sableTrackedChunks);
+        SableLodChunkManager.updateTickets((ServerLevel) (Object) this, this.voxy$sableTrackedChunks, this.voxy$sableTrackedHoldingChunks);
     }
 
     @Inject(method = "close", at = @At("HEAD"))
     private void voxy$releaseSableTickets(CallbackInfo ci) {
-        SableLodChunkManager.clearTickets((ServerLevel) (Object) this, this.voxy$sableTrackedChunks);
+        SableLodChunkManager.clearTickets((ServerLevel) (Object) this, this.voxy$sableTrackedChunks, this.voxy$sableTrackedHoldingChunks);
     }
 }

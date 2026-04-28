@@ -6,6 +6,7 @@ import me.cortex.voxy.common.Logger;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.level.ServerLevel;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
@@ -13,6 +14,7 @@ import java.nio.file.Path;
 
 public final class SableContraptionRenderDistance {
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("voxy-config.json");
+    private static final Path SABLE_COMMON_CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("sable-common.toml");
     private static final int CONFIG_REFRESH_TICKS = 20;
     private static final int CHUNKS_PER_SECTION_RENDER_DISTANCE = 32;
     private static final int BLOCKS_PER_CHUNK = 16;
@@ -24,13 +26,16 @@ public final class SableContraptionRenderDistance {
 
     private static ConfigSnapshot cachedConfig = DISABLED_CONFIG;
     private static long nextConfigRefreshTick;
+    private static double cachedDedicatedServerRangeBlocks = DEDICATED_SERVER_FALLBACK_BLOCKS;
+    private static long cachedDedicatedServerConfigLastModified = Long.MIN_VALUE;
+    private static long nextDedicatedServerConfigRefreshTick;
 
     private SableContraptionRenderDistance() {
     }
 
     public static double getRangeBlocks(ServerLevel level) {
         if (level.getServer().isDedicatedServer()) {
-            return DEDICATED_SERVER_FALLBACK_BLOCKS;
+            return getDedicatedServerRangeBlocks(level.getGameTime());
         }
 
         ConfigSnapshot config = getConfig(level.getGameTime());
@@ -42,6 +47,60 @@ public final class SableContraptionRenderDistance {
         int percent = Math.max(0, Math.min(100, config.simulatedContraptionRenderDistancePercent()));
         int contraptionDistanceChunks = (int) Math.ceil(renderDistanceChunks * (percent / 100.0D));
         return contraptionDistanceChunks * BLOCKS_PER_CHUNK;
+    }
+
+    private static double getDedicatedServerRangeBlocks(long gameTime) {
+        if (gameTime < nextDedicatedServerConfigRefreshTick) {
+            return cachedDedicatedServerRangeBlocks;
+        }
+        nextDedicatedServerConfigRefreshTick = gameTime + CONFIG_REFRESH_TICKS;
+
+        long lastModified;
+        try {
+            lastModified = Files.exists(SABLE_COMMON_CONFIG_PATH) ? Files.getLastModifiedTime(SABLE_COMMON_CONFIG_PATH).toMillis() : Long.MIN_VALUE;
+        } catch (IOException e) {
+            return DEDICATED_SERVER_FALLBACK_BLOCKS;
+        }
+
+        if (cachedDedicatedServerConfigLastModified == lastModified) {
+            return cachedDedicatedServerRangeBlocks;
+        }
+
+        cachedDedicatedServerConfigLastModified = lastModified;
+        cachedDedicatedServerRangeBlocks = loadDedicatedServerRangeBlocks();
+        return cachedDedicatedServerRangeBlocks;
+    }
+
+    private static double loadDedicatedServerRangeBlocks() {
+        if (!Files.exists(SABLE_COMMON_CONFIG_PATH)) {
+            return DEDICATED_SERVER_FALLBACK_BLOCKS;
+        }
+
+        try (BufferedReader reader = Files.newBufferedReader(SABLE_COMMON_CONFIG_PATH)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                int commentStart = line.indexOf('#');
+                if (commentStart >= 0) {
+                    line = line.substring(0, commentStart);
+                }
+
+                line = line.trim();
+                if (!line.startsWith("sub_level_tracking_range")) {
+                    continue;
+                }
+
+                int assignment = line.indexOf('=');
+                if (assignment < 0) {
+                    continue;
+                }
+
+                return Math.max(0.0, Double.parseDouble(line.substring(assignment + 1).trim()));
+            }
+        } catch (IOException | RuntimeException e) {
+            Logger.error("Failed to load Sable sub_level_tracking_range for Voxy Sable LOD compatibility", e);
+        }
+
+        return DEDICATED_SERVER_FALLBACK_BLOCKS;
     }
 
     private static ConfigSnapshot getConfig(long gameTime) {

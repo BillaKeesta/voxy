@@ -10,6 +10,9 @@
     "minecraft.MixinServerLevel",
     "minecraft.MixinWorld",
     "sable.MixinClientSubLevelFinalizeLighting",
+    "sable.MixinPhysicsChunkTicketManager",
+    "sable.MixinSubLevelHoldingChunkMap",
+    "sable.SableSubLevelHoldingChunkMapAccessor",
     "sable.MixinSubLevelTrackingSystem"
   ],
   "overwrites": {
