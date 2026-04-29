@@ -30,6 +30,9 @@ public class MixinClientSubLevelFinalizeLighting {
     @Unique
     private static boolean voxy$skyLightFallbackUnavailable;
 
+    @Unique
+    private long voxy$lastSkyLightCacheRevision = Long.MIN_VALUE;
+
     @Shadow(remap = false)
     private int latestSkyLightScale;
 
@@ -44,16 +47,20 @@ public class MixinClientSubLevelFinalizeLighting {
         this.latestSkyLightScale = -1;
     }
 
+    @Inject(method = "getLatestSkyLightScale", at = @At("HEAD"), remap = false)
+    private void voxy$invalidateSkyLightAfterPacketCacheUpdate(CallbackInfoReturnable<Integer> cir) {
+        long revision = SableClientSkyLightCache.revision(this.getLevel());
+        if (this.voxy$lastSkyLightCacheRevision != revision) {
+            this.latestSkyLightScale = -1;
+            this.voxy$lastSkyLightCacheRevision = revision;
+        }
+    }
+
     @Inject(method = "computeSubLevelSkyLight", at = @At("RETURN"), cancellable = true, remap = false)
     private void voxy$useVoxySkyLightWhenVanillaChunkIsMissing(Pose3dc pose, CallbackInfoReturnable<Integer> cir) {
-        int vanillaSkyLight = cir.getReturnValue();
-        if (vanillaSkyLight > 0) {
-            return;
-        }
-
         ClientLevel level = this.getLevel();
         int fallbackSkyLight = voxy$getChunkBackedSubLevelSkyLight(level, pose, this.boundingBox());
-        if (fallbackSkyLight > 0) {
+        if (fallbackSkyLight >= 0) {
             cir.setReturnValue(fallbackSkyLight);
         }
     }
@@ -69,16 +76,16 @@ public class MixinClientSubLevelFinalizeLighting {
             if (bounds == null || bounds.volume() < 9.0D) {
                 var position = pose.position();
                 skyLight = voxy$sampleChunkBackedSkyLight(level, position.x(), position.y(), position.z());
-                if (skyLight == 0) {
-                    skyLight = voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() + 1.0D, position.z());
+                if (skyLight <= 0) {
+                    skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() + 1.0D, position.z()));
                 }
-                if (skyLight == 0) {
-                    skyLight = voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() - 1.0D, position.z());
+                if (skyLight <= 0) {
+                    skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, position.x(), position.y() - 1.0D, position.z()));
                 }
             } else {
                 Vector3d center = bounds.center(new Vector3d());
                 double sampleY = center.y() + 0.1D;
-                skyLight = 0;
+                skyLight = -1;
                 skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, center.x(), sampleY, center.z()));
                 skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, bounds.minX(), sampleY, bounds.minZ()));
                 skyLight = Math.max(skyLight, voxy$sampleChunkBackedSkyLight(level, bounds.maxX(), sampleY, bounds.minZ()));

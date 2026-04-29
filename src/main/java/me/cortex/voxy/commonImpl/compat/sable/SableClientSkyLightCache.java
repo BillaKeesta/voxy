@@ -45,6 +45,7 @@ public final class SableClientSkyLightCache {
             int minSection = level.getMinSection();
             int sectionCount = level.getSectionsCount();
             long gameTime = level.getGameTime();
+            boolean cachedAny = false;
 
             for (int sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++) {
                 DataLayer skyLight = lightData.skyLight(sectionIndex);
@@ -56,8 +57,12 @@ public final class SableClientSkyLightCache {
                         SectionPos.asLong(chunkX, minSection + sectionIndex, chunkZ),
                         new CachedSkyLight(skyLight.copy(), gameTime)
                 );
+                cachedAny = true;
             }
 
+            if (cachedAny) {
+                state.revision++;
+            }
             enforceMaxSize(state);
         } catch (RuntimeException | LinkageError e) {
             Logger.error("Disabling Sable sky light packet cache after packet light read failed", e);
@@ -98,6 +103,11 @@ public final class SableClientSkyLightCache {
         return Math.min(15, cached.skyLight.get(pos.getX() & 15, pos.getY() & 15, pos.getZ() & 15));
     }
 
+    public static synchronized long revision(ClientLevel level) {
+        CacheState state = CACHES.get(level);
+        return state == null ? 0L : state.revision;
+    }
+
     public static synchronized void tick(ClientLevel level) {
         try {
             CacheState state = CACHES.get(level);
@@ -112,13 +122,18 @@ public final class SableClientSkyLightCache {
 
             state.nextSweepGameTime = gameTime + SWEEP_INTERVAL_TICKS;
             Iterator<Map.Entry<Long, CachedSkyLight>> iterator = state.skyLightSections.entrySet().iterator();
+            boolean removedAny = false;
             while (iterator.hasNext()) {
                 CachedSkyLight cached = iterator.next().getValue();
                 if (cached == null || gameTime - cached.gameTime > SKY_LIGHT_TTL_TICKS) {
                     iterator.remove();
+                    removedAny = true;
                 }
             }
 
+            if (removedAny) {
+                state.revision++;
+            }
             if (state.skyLightSections.isEmpty()) {
                 CACHES.remove(level);
             }
@@ -143,6 +158,7 @@ public final class SableClientSkyLightCache {
     private static final class CacheState {
         private final Map<Long, CachedSkyLight> skyLightSections = new HashMap<>();
         private long nextSweepGameTime;
+        private long revision;
     }
 
     private record CachedSkyLight(DataLayer skyLight, long gameTime) {
