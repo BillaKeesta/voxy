@@ -28,7 +28,7 @@ public final class SableClientSkyLightCache {
     private SableClientSkyLightCache() {
     }
 
-    public static void cacheFromPacket(ClientLevel level, ClientboundLevelChunkWithLightPacket packet) {
+    public static synchronized void cacheFromPacket(ClientLevel level, ClientboundLevelChunkWithLightPacket packet) {
         if (unavailable) {
             return;
         }
@@ -66,7 +66,7 @@ public final class SableClientSkyLightCache {
         }
     }
 
-    public static int getSkyLight(ClientLevel level, BlockPos pos) {
+    public static synchronized int getSkyLight(ClientLevel level, BlockPos pos) {
         CacheState state = CACHES.get(level);
         if (state == null || state.skyLightSections.isEmpty()) {
             return -1;
@@ -98,7 +98,7 @@ public final class SableClientSkyLightCache {
         return Math.min(15, cached.skyLight.get(pos.getX() & 15, pos.getY() & 15, pos.getZ() & 15));
     }
 
-    public static void tick(ClientLevel level) {
+    public static synchronized void tick(ClientLevel level) {
         try {
             CacheState state = CACHES.get(level);
             if (state == null) {
@@ -128,7 +128,7 @@ public final class SableClientSkyLightCache {
         }
     }
 
-    public static void clear(ClientLevel level) {
+    public static synchronized void clear(ClientLevel level) {
         CACHES.remove(level);
     }
 
