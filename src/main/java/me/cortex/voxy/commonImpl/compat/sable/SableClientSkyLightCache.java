@@ -1,8 +1,5 @@
 package me.cortex.voxy.commonImpl.compat.sable;
 
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongIterator;
 import me.cortex.voxy.common.Logger;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
@@ -14,6 +11,7 @@ import net.minecraft.world.level.lighting.LevelLightEngine;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.BitSet;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -101,27 +99,31 @@ public final class SableClientSkyLightCache {
     }
 
     public static void tick(ClientLevel level) {
-        CacheState state = CACHES.get(level);
-        if (state == null) {
-            return;
-        }
-
-        long gameTime = level.getGameTime();
-        if (gameTime < state.nextSweepGameTime) {
-            return;
-        }
-
-        state.nextSweepGameTime = gameTime + SWEEP_INTERVAL_TICKS;
-        LongIterator iterator = state.skyLightSections.keySet().iterator();
-        while (iterator.hasNext()) {
-            long sectionKey = iterator.nextLong();
-            CachedSkyLight cached = state.skyLightSections.get(sectionKey);
-            if (cached == null || gameTime - cached.gameTime > SKY_LIGHT_TTL_TICKS) {
-                iterator.remove();
+        try {
+            CacheState state = CACHES.get(level);
+            if (state == null) {
+                return;
             }
-        }
 
-        if (state.skyLightSections.isEmpty()) {
+            long gameTime = level.getGameTime();
+            if (gameTime < state.nextSweepGameTime) {
+                return;
+            }
+
+            state.nextSweepGameTime = gameTime + SWEEP_INTERVAL_TICKS;
+            Iterator<Map.Entry<Long, CachedSkyLight>> iterator = state.skyLightSections.entrySet().iterator();
+            while (iterator.hasNext()) {
+                CachedSkyLight cached = iterator.next().getValue();
+                if (cached == null || gameTime - cached.gameTime > SKY_LIGHT_TTL_TICKS) {
+                    iterator.remove();
+                }
+            }
+
+            if (state.skyLightSections.isEmpty()) {
+                CACHES.remove(level);
+            }
+        } catch (RuntimeException e) {
+            Logger.error("Clearing Sable sky light packet cache after sweep failed", e);
             CACHES.remove(level);
         }
     }
@@ -131,15 +133,15 @@ public final class SableClientSkyLightCache {
     }
 
     private static void enforceMaxSize(CacheState state) {
-        LongIterator iterator = state.skyLightSections.keySet().iterator();
+        Iterator<Long> iterator = state.skyLightSections.keySet().iterator();
         while (state.skyLightSections.size() > MAX_CACHED_SECTIONS && iterator.hasNext()) {
-            iterator.nextLong();
+            iterator.next();
             iterator.remove();
         }
     }
 
     private static final class CacheState {
-        private final Long2ObjectMap<CachedSkyLight> skyLightSections = new Long2ObjectOpenHashMap<>();
+        private final Map<Long, CachedSkyLight> skyLightSections = new HashMap<>();
         private long nextSweepGameTime;
     }
 

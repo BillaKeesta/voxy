@@ -3,6 +3,7 @@ package me.cortex.voxy.commonImpl.mixin.sable;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.holding.GlobalSavedSubLevelPointer;
 import dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunk;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import me.cortex.voxy.commonImpl.compat.sable.SableHoldingChunkIndexSavedData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
@@ -46,7 +47,16 @@ public class MixinSubLevelHoldingChunkMap {
     }
 
     private void voxy$markOrUnmark(ChunkPos chunkPos) {
-        SubLevelHoldingChunk holdingChunk = ((SableSubLevelHoldingChunkMapAccessor) this).voxy$invokeGetOrLoadHoldingChunk(chunkPos, false);
+        Long2ObjectMap<SubLevelHoldingChunk> loadedHoldingChunks = ((SableSubLevelHoldingChunkMapAccessor) this).voxy$getLoadedHoldingChunks();
+        if (loadedHoldingChunks == null) {
+            return;
+        }
+
+        SubLevelHoldingChunk holdingChunk = loadedHoldingChunks.get(chunkPos.toLong());
+        if (holdingChunk == null) {
+            return;
+        }
+
         voxy$markOrUnmark(chunkPos, holdingChunk);
     }
 

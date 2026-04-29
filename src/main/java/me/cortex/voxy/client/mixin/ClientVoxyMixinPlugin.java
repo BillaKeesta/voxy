@@ -13,12 +13,16 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
     private static boolean valkyrienSkiesInstalled;
     private static boolean nvidiumInstalled;
     private static boolean connectorInstalled = false;
+    private static boolean sableInstalled = false;
+    private static boolean sodiumInstalled = false;
 
     @Override
     public void onLoad(String mixinPackage) {
         valkyrienSkiesInstalled = FabricLoader.getInstance().isModLoaded("valkyrienskies");
         nvidiumInstalled = FabricLoader.getInstance().isModLoaded("nvidium");
         connectorInstalled = FabricLoader.getInstance().isModLoaded("connector");
+        sableInstalled = FabricLoader.getInstance().isModLoaded("sable");
+        sodiumInstalled = FabricLoader.getInstance().isModLoaded("sodium");
     }
 
     @Override
@@ -34,6 +38,14 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
 
         if (connectorInstalled) {
             mixins.add("sodium.MixinShaderLoader");
+        }
+
+        if (sableInstalled) {
+            mixins.add("minecraft.MixinGameRendererSableRenderDistance");
+            mixins.add("sable.MixinSableReacharoundCulling");
+            if (sodiumInstalled) {
+                mixins.add("sable.MixinSableSubLevelRenderSectionManager");
+            }
         }
 
         return mixins;

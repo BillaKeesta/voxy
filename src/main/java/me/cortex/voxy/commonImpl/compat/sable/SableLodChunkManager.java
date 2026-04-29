@@ -3,10 +3,12 @@ package me.cortex.voxy.commonImpl.compat.sable;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.HoldingSubLevel;
 import dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunk;
 import dev.ryanhcode.sable.sublevel.storage.holding.SubLevelHoldingChunkMap;
+import dev.ryanhcode.sable.sublevel.storage.serialization.SubLevelData;
 import dev.ryanhcode.sable.sublevel.system.ticket.PhysicsChunkTicketManager;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -14,6 +16,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.mixin.sable.SableSubLevelHoldingChunkMapAccessor;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.util.Mth;
@@ -129,6 +132,31 @@ public final class SableLodChunkManager {
         return isChunkWithinHorizontalDistance(level, new ChunkPos(chunkX, chunkZ), horizontalRenderDistanceBlocks * horizontalRenderDistanceBlocks);
     }
 
+    public static boolean isSubLevelAlreadyActive(ServerLevel level, SubLevelData data) {
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) {
+            return false;
+        }
+
+        SubLevel byUuid = container.getSubLevel(data.uuid());
+        if (byUuid != null && !byUuid.isRemoved()) {
+            return true;
+        }
+
+        CompoundTag fullTag = data.fullTag();
+        if (fullTag == null || !fullTag.contains("plot")) {
+            return false;
+        }
+
+        CompoundTag plotTag = fullTag.getCompound("plot");
+        if (!plotTag.contains("plot_x") || !plotTag.contains("plot_z")) {
+            return false;
+        }
+
+        SubLevel byPlot = container.getSubLevel(plotTag.getInt("plot_x"), plotTag.getInt("plot_z"));
+        return byPlot != null && !byPlot.isRemoved();
+    }
+
     private static void updateHoldingChunkLoads(
             ServerLevel level,
             SubLevelHoldingChunkMap holdingChunkMap,
@@ -142,7 +170,7 @@ public final class SableLodChunkManager {
         }
 
         LongSet knownHoldingChunks = getKnownHoldingChunks(level, holdingChunkMap);
-        SableSubLevelHoldingChunkMapAccessor accessor = (SableSubLevelHoldingChunkMapAccessor) holdingChunkMap;
+        Long2ObjectMap<SubLevelHoldingChunk> loadedHoldingChunks = ((SableSubLevelHoldingChunkMapAccessor) holdingChunkMap).voxy$getLoadedHoldingChunks();
         LongIterator iterator = knownHoldingChunks.iterator();
         while (iterator.hasNext()) {
             long chunk = iterator.nextLong();
@@ -155,9 +183,8 @@ public final class SableLodChunkManager {
             trackedHoldingChunks.add(chunk);
             holdingChunkMap.updateChunkStatus(chunkPos, true);
 
-            SubLevelHoldingChunk holdingChunk = accessor.voxy$invokeGetOrLoadHoldingChunk(chunkPos, false);
+            SubLevelHoldingChunk holdingChunk = loadedHoldingChunks == null ? null : loadedHoldingChunks.get(chunk);
             if (holdingChunk == null) {
-                desiredChunks.add(chunk);
                 continue;
             }
 

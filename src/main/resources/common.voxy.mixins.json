@@ -11,6 +11,7 @@
     "minecraft.MixinWorld",
     "sable.MixinClientSubLevelFinalizeLighting",
     "sable.MixinPhysicsChunkTicketManager",
+    "sable.MixinSubLevelHoldingChunk",
     "sable.MixinSubLevelHoldingChunkMap",
     "sable.SableSubLevelHoldingChunkMapAccessor",
     "sable.MixinSubLevelTrackingSystem"
