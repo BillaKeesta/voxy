@@ -19,7 +19,6 @@ import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
-import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -219,13 +218,10 @@ public class SoftwareModelTextureBakery {
     public int renderToOutput(BlockState state, long outputBuffer) {
         MemoryUtil.memSet(outputBuffer, 0, 16 * 16 * 8 * 6);
 
-        boolean isBlock = true;
-        if (state.getBlock() instanceof LiquidBlock) {
-            isBlock = false;
-        }
+        boolean isBlock = !ModelFactory.isFluidBlockState(state);
 
         RenderType blockRenderLayer = null;
-        if (state.getBlock() instanceof LiquidBlock) {
+        if (!isBlock) {
             blockRenderLayer = ItemBlockRenderTypes.getRenderLayer(state.getFluidState());
         } else {
             if (state.getBlock() instanceof LeavesBlock) {
@@ -268,8 +264,6 @@ public class SoftwareModelTextureBakery {
             }
         } else {// Is fluid, slow path :(
 
-            if (!(state.getBlock() instanceof LiquidBlock))
-                throw new IllegalStateException();
             for (int i = 0; i < VIEWS.length; i++) {
                 this.opaqueVC.reset();
                 this.translucentVC.reset();
