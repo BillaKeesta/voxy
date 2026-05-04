@@ -6,7 +6,9 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import me.cortex.voxy.client.core.model.ModelFactory;
+import me.cortex.voxy.common.util.LumiseneUtil;
 import me.cortex.voxy.common.util.UnsafeUtil;
+import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderHandlerRegistry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.RenderType;
@@ -142,7 +144,7 @@ public class SoftwareModelTextureBakery {
 
             @Override
             public BlockState getBlockState(BlockPos pos) {
-                if (shouldReturnAirForFluid(pos, face)) {
+                if (shouldReturnAirForFluid(pos, face) || shouldReturnAirAboveLumisene(state, pos)) {
                     return Blocks.AIR.defaultBlockState();
                 }
 
@@ -160,7 +162,7 @@ public class SoftwareModelTextureBakery {
 
             @Override
             public FluidState getFluidState(BlockPos pos) {
-                if (shouldReturnAirForFluid(pos, face)) {
+                if (shouldReturnAirForFluid(pos, face) || shouldReturnAirAboveLumisene(state, pos)) {
                     return Blocks.AIR.defaultBlockState().getFluidState();
                 }
 
@@ -192,7 +194,13 @@ public class SoftwareModelTextureBakery {
         } else {
             this.opaqueVC.setDefaultMeta(this.opaqueVC.getDefaultMeta()&~1);//remove discard
         }
-        Minecraft.getInstance().getBlockRenderer().renderLiquid(BlockPos.ZERO, getter, vc, state, state.getFluidState());
+        FluidState fluidState = state.getFluidState();
+        var handler = FluidRenderHandlerRegistry.INSTANCE.get(fluidState.getType());
+        if (handler != null) {
+            handler.renderFluid(BlockPos.ZERO, getter, vc, state, fluidState);
+        } else {
+            Minecraft.getInstance().getBlockRenderer().renderLiquid(BlockPos.ZERO, getter, vc, state, fluidState);
+        }
         this.translucentVC.setDefaultMeta(0);//Reset default meta
         this.opaqueVC.setDefaultMeta(0);//Reset default meta
     }
@@ -201,6 +209,10 @@ public class SoftwareModelTextureBakery {
         var fv = Direction.from3DDataValue(face).getNormal();
         int dot = fv.getX() * pos.getX() + fv.getY() * pos.getY() + fv.getZ() * pos.getZ();
         return dot >= 1;
+    }
+
+    private static boolean shouldReturnAirAboveLumisene(BlockState state, BlockPos pos) {
+        return pos.getY() > 0 && LumiseneUtil.isLumisene(state);
     }
 
     public void free() {

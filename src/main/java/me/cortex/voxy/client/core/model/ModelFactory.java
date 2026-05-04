@@ -10,6 +10,7 @@ import me.cortex.voxy.client.core.gl.GlTexture;
 import me.cortex.voxy.client.core.model.bakery.SoftwareModelTextureBakery;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.Logger;
+import me.cortex.voxy.common.util.LumiseneUtil;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.util.Pair;
 import me.cortex.voxy.common.world.other.Mapper;
@@ -360,6 +361,7 @@ public class ModelFactory {
         //TODO: add thing for `blockState.hasEmissiveLighting()` and `blockState.getLuminance()`
 
         boolean isFluid = isFluidBlockState(blockState);
+        boolean isLumisene = LumiseneUtil.isLumisene(blockState);
         int modelId = -1;
 
 
@@ -479,7 +481,7 @@ public class ModelFactory {
         metadata |= layer == RenderType.translucent()?2:0;
         metadata |= needsDoubleSidedQuads?4:0;
         metadata |= ((!isFluid) && !blockState.getFluidState().isEmpty())?8:0;//Has a fluid state accosiacted with it and is not itself a fluid
-        metadata |= isFluid?16:0;//Is a fluid
+        metadata |= (isFluid && !isLumisene)?16:0;//Is a fluid
 
         metadata |= cullsSame?32:0;
 
@@ -495,6 +497,13 @@ public class ModelFactory {
             if (offset < -0.1) {//Face is empty, so ignore
                 metadata |= 0xFF;//Mark the face as non-existent
                 //Set to -1 as safepoint
+                MemoryUtil.memPutInt(faceUploadPtr, -1);
+
+                fullyOpaque = false;
+                continue;
+            }
+            if (face >= Direction.NORTH.get3DDataValue() && LumiseneUtil.isThinLumisene(blockState)) {
+                metadata |= 0xFF;//Mark the face as non-existent
                 MemoryUtil.memPutInt(faceUploadPtr, -1);
 
                 fullyOpaque = false;
@@ -727,6 +736,10 @@ public class ModelFactory {
     }
 
     private static BlockColor getColourProvider(BlockState blockState) {
+        if (LumiseneUtil.isLumisene(blockState)) {
+            return null;
+        }
+
         Block block = blockState.getBlock();
         BlockState defaultState = block.defaultBlockState();
         var blockColors = Minecraft.getInstance().getBlockColors();
