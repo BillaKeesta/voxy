@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import me.cortex.voxy.client.core.SSAO;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
+import me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.caffeinemc.mods.sodium.client.gui.options.storage.OptionStorage;
 import net.fabricmc.loader.api.FabricLoader;
@@ -87,6 +88,7 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
     public void save() {
         if (!VoxyCommon.isAvailable()) {
             Logger.info("Not saving config since voxy is unavalible");
+            this.syncSableContraptionRenderDistance();
             return;
         }
 
@@ -99,6 +101,8 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
         } catch (IOException e) {
             Logger.error("Failed to write config file", e);
         }
+
+        this.syncSableContraptionRenderDistance();
     }
 
     private static Path getConfigPath() {
@@ -114,5 +118,13 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
 
     public boolean isRenderingEnabled() {
         return VoxyCommon.isAvailable() && this.enabled && this.enableRendering;
+    }
+
+    public void syncSableContraptionRenderDistance() {
+        SableContraptionRenderDistance.updateClientConfig(
+                this.isRenderingEnabled(),
+                this.sectionRenderDistance,
+                this.simulatedContraptionRenderDistancePercent
+        );
     }
 }

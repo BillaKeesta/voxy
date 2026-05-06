@@ -25,6 +25,7 @@ public final class SableContraptionRenderDistance {
     private static final ConfigSnapshot DISABLED_CONFIG = new ConfigSnapshot(false, 0.0, DEFAULT_PERCENT, Long.MIN_VALUE);
 
     private static ConfigSnapshot cachedConfig = DISABLED_CONFIG;
+    private static volatile ConfigSnapshot runtimeClientConfig;
     private static long nextConfigRefreshTick;
     private static double cachedDedicatedServerRangeBlocks = DEDICATED_SERVER_FALLBACK_BLOCKS;
     private static long cachedDedicatedServerConfigLastModified = Long.MIN_VALUE;
@@ -38,7 +39,10 @@ public final class SableContraptionRenderDistance {
             return getDedicatedServerRangeBlocks(level.getGameTime());
         }
 
-        ConfigSnapshot config = getConfig(level.getGameTime());
+        ConfigSnapshot config = runtimeClientConfig;
+        if (config == null) {
+            config = getConfig(level.getGameTime());
+        }
         if (!config.enabled()) {
             return 0.0;
         }
@@ -47,6 +51,15 @@ public final class SableContraptionRenderDistance {
         int percent = Math.max(0, Math.min(100, config.simulatedContraptionRenderDistancePercent()));
         int contraptionDistanceChunks = (int) Math.ceil(renderDistanceChunks * (percent / 100.0D));
         return contraptionDistanceChunks * BLOCKS_PER_CHUNK;
+    }
+
+    public static void updateClientConfig(boolean enabled, double sectionRenderDistance, int simulatedContraptionRenderDistancePercent) {
+        if (!enabled || sectionRenderDistance <= 0.0) {
+            runtimeClientConfig = new ConfigSnapshot(false, 0.0, simulatedContraptionRenderDistancePercent, Long.MAX_VALUE);
+            return;
+        }
+
+        runtimeClientConfig = new ConfigSnapshot(true, sectionRenderDistance, simulatedContraptionRenderDistancePercent, Long.MAX_VALUE);
     }
 
     private static double getDedicatedServerRangeBlocks(long gameTime) {

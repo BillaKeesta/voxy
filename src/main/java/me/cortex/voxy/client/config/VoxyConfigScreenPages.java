@@ -2,6 +2,7 @@ package me.cortex.voxy.client.config;
 
 import com.google.common.collect.ImmutableList;
 import me.cortex.voxy.client.ClientSessionEvents;
+import me.cortex.voxy.client.compat.sable.SableClientRenderDistance;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.SSAO;
 import me.cortex.voxy.client.core.util.IrisUtil;
@@ -56,6 +57,8 @@ public abstract class VoxyConfigScreenPages {
                             }
 
                             try { IrisUtil.reload(); } catch (Throwable ignored) {}
+                            s.syncSableContraptionRenderDistance();
+                            refreshSableRenderDistance(sableInstalled);
                         }, s -> s.enabled)
                         .setFlags(OptionFlag.REQUIRES_RENDERER_RELOAD)
                         .build()
@@ -120,6 +123,8 @@ public abstract class VoxyConfigScreenPages {
                                 }
                             }
                             try { IrisUtil.reload(); } catch (Throwable ignored) {}
+                            s.syncSableContraptionRenderDistance();
+                            refreshSableRenderDistance(sableInstalled);
                         }, s -> s.enableRendering)
                         .setImpact(OptionImpact.HIGH)
                         .setFlags(OptionFlag.REQUIRES_RENDERER_RELOAD)
@@ -147,6 +152,8 @@ public abstract class VoxyConfigScreenPages {
                                     vrs.setRenderDistance(s.sectionRenderDistance);
                                 }
                             }
+                            s.syncSableContraptionRenderDistance();
+                            refreshSableRenderDistance(sableInstalled);
                         }, s -> Math.round(s.sectionRenderDistance * 16))
                         .setImpact(OptionImpact.LOW)
                         .setFlags(OptionFlag.REQUIRES_RENDERER_RELOAD)
@@ -221,7 +228,11 @@ public abstract class VoxyConfigScreenPages {
                         .setName(Component.translatable("voxy.config.general.simulated_contraption_render_distance"))
                         .setTooltip(Component.translatable("voxy.config.general.simulated_contraption_render_distance.tooltip"))
                         .setControl(opt -> new SliderControl(opt, 0, 100, 1, v -> Component.literal(v + "%")))
-                        .setBinding((s, v) -> s.simulatedContraptionRenderDistancePercent = v, s -> s.simulatedContraptionRenderDistancePercent)
+                        .setBinding((s, v) -> {
+                            s.simulatedContraptionRenderDistancePercent = v;
+                            s.syncSableContraptionRenderDistance();
+                            refreshSableRenderDistance(true);
+                        }, s -> s.simulatedContraptionRenderDistancePercent)
                         .setImpact(OptionImpact.MEDIUM)
                         .build()
                 ).build()
@@ -241,6 +252,12 @@ public abstract class VoxyConfigScreenPages {
         } catch (Throwable ignored) {}
 
         try { IrisUtil.reload(); } catch (Throwable ignored) {}
+    }
+
+    private static void refreshSableRenderDistance(boolean sableInstalled) {
+        if (sableInstalled) {
+            SableClientRenderDistance.refreshSableRenderData();
+        }
     }
 
     private static final int SUBDIV_IN_MAX = 100;

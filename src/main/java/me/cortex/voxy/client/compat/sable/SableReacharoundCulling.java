@@ -15,6 +15,10 @@ public final class SableReacharoundCulling {
     }
 
     public static Iterable<ClientSubLevel> filter(Iterable<ClientSubLevel> subLevels, double cameraX, double cameraZ) {
+        if (!SableClientRenderDistance.isVoxyRenderDistanceActive()) {
+            return subLevels;
+        }
+
         int vanillaRenderDistanceChunks = Minecraft.getInstance().options.getEffectiveRenderDistance();
         double renderDistanceBlocks = SableClientRenderDistance.getRenderDistanceBlocks(vanillaRenderDistanceChunks) + HYSTERESIS_BLOCKS;
         if (!Double.isFinite(renderDistanceBlocks) || renderDistanceBlocks <= 0.0D) {
