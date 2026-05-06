@@ -43,6 +43,7 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
         if (sableInstalled) {
             mixins.add("minecraft.MixinGameRendererSableRenderDistance");
             mixins.add("sable.MixinSableReacharoundCulling");
+            mixins.add("sable.MixinSableDepthShim");
             if (sodiumInstalled) {
                 mixins.add("sable.MixinSableSubLevelRenderSectionManager");
             }
