@@ -659,7 +659,7 @@ public class ModelFactory {
     private static int getBlockLightEmission(BlockState state) {
         boolean isEmissive = state.emissiveRendering(new BlockGetter() {
             @Override
-            public @org.jspecify.annotations.Nullable BlockEntity getBlockEntity(BlockPos pos) {
+            public @Nullable BlockEntity getBlockEntity(BlockPos pos) {
                 return null;
             }
 
@@ -679,7 +679,7 @@ public class ModelFactory {
             }
 
             @Override
-            public int getMinY() {
+            public int getMinBuildHeight() {
                 return 0;
             }
         }, BlockPos.ZERO);
