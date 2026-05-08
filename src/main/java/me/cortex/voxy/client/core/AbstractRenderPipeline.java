@@ -13,6 +13,7 @@ import me.cortex.voxy.client.core.rendering.section.backend.AbstractSectionRende
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
 import me.cortex.voxy.client.core.util.GPUTiming;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.TrackedObject;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL30;
@@ -45,6 +46,9 @@ import static org.lwjgl.opengl.GL45.glGetNamedFramebufferAttachmentParameteri;
 import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public abstract class AbstractRenderPipeline extends TrackedObject {
+    private static final boolean USE_SOURCE_DEPTH_FOR_HIZ = Boolean.parseBoolean(System.getProperty("voxy.debugHizUseSourceDepth", "false"));
+    private static final boolean RENDER_CURRENT_FRAME_ONLY = Boolean.parseBoolean(System.getProperty("voxy.debugRenderCurrentFrameOnly", "false"));
+
     private final BooleanSupplier frexStillHasWork;
 
     private final AsyncNodeManager nodeManager;
@@ -58,6 +62,8 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     public final DepthFramebuffer fb = new DepthFramebuffer(GL_DEPTH24_STENCIL8);
 
     protected final boolean deferTranslucency;
+    private boolean sourceDepthHizLogged;
+    private boolean currentFrameOnlyLogged;
 
     private static final int DEPTH_SAMPLER = glGenSamplers();
     static {
@@ -95,14 +101,54 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
     public void runPipeline(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         int depthTexture = this.setup(viewport, sourceFrameBuffer, srcWidth, srcHeight);
+        int hizDepthTexture = this.selectHizDepthTexture(sourceFrameBuffer, depthTexture);
+        int hizWidth = hizDepthTexture == depthTexture ? viewport.width : srcWidth;
+        int hizHeight = hizDepthTexture == depthTexture ? viewport.height : srcHeight;
 
         var rs = ((AbstractSectionRenderer)this.sectionRenderer);
+        if (RENDER_CURRENT_FRAME_ONLY) {
+            if (!this.currentFrameOnlyLogged) {
+                Logger.warn("Voxy rendering current-frame draw calls only due to voxy.debugRenderCurrentFrameOnly");
+                this.currentFrameOnlyLogged = true;
+            }
+
+            var occlusionDebug = VoxyClient.getOcclusionDebugState();
+            if (occlusionDebug==0) {
+                GPUTiming.INSTANCE.marker("I");
+                this.innerPrimaryWork(viewport, hizDepthTexture, hizWidth, hizHeight);
+                GPUTiming.INSTANCE.marker();
+            }
+
+            if (occlusionDebug<=1) {
+                TimingStatistics.G.start();
+                rs.buildDrawCalls(viewport);
+                TimingStatistics.G.stop();
+            }
+
+            GPUTiming.INSTANCE.marker("RO");
+            rs.renderOpaque(viewport);
+
+            rs.postOpaquePreperation(viewport);
+
+            this.postOpaquePreTranslucent(viewport, sourceFrameBuffer);
+            GPUTiming.INSTANCE.marker("RT");
+
+            if (!this.deferTranslucency) {
+                rs.renderTranslucent(viewport);
+            }
+            GPUTiming.INSTANCE.marker();
+
+            this.finish(viewport, sourceFrameBuffer, srcWidth, srcHeight);
+            glBindFramebuffer(GL_FRAMEBUFFER, sourceFrameBuffer);
+            return;
+        }
+
         GPUTiming.INSTANCE.marker("RO");
         rs.renderOpaque(viewport);
         var occlusionDebug = VoxyClient.getOcclusionDebugState();
         if (occlusionDebug==0) {
             GPUTiming.INSTANCE.marker("I");
-            this.innerPrimaryWork(viewport, depthTexture);
+            this.innerPrimaryWork(viewport, hizDepthTexture, hizWidth, hizHeight);
             GPUTiming.INSTANCE.marker();
         }
 
@@ -127,6 +173,27 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
         this.finish(viewport, sourceFrameBuffer, srcWidth, srcHeight);
         glBindFramebuffer(GL_FRAMEBUFFER, sourceFrameBuffer);
+    }
+
+    private int selectHizDepthTexture(int sourceFrameBuffer, int fallbackDepthTexture) {
+        if (!USE_SOURCE_DEPTH_FOR_HIZ) {
+            return fallbackDepthTexture;
+        }
+
+        int sourceDepthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        if (sourceDepthTexture == 0) {
+            if (!this.sourceDepthHizLogged) {
+                Logger.warn("Voxy source-depth HiZ requested by voxy.debugHizUseSourceDepth, but source framebuffer has no depth texture; using Voxy mask depth");
+                this.sourceDepthHizLogged = true;
+            }
+            return fallbackDepthTexture;
+        }
+
+        if (!this.sourceDepthHizLogged) {
+            Logger.warn("Voxy source-depth HiZ enabled by voxy.debugHizUseSourceDepth; traversal occlusion will sample source framebuffer depth instead of Voxy's binary stencil mask depth");
+            this.sourceDepthHizLogged = true;
+        }
+        return sourceDepthTexture;
     }
 
     protected void initDepthStencil(int sourceFrameBuffer, int targetFb, int srcWidth, int srcHeight, int width, int height) {
@@ -183,10 +250,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glDisable(GL_DEPTH_TEST);
     }
 
-    protected void innerPrimaryWork(Viewport<?> viewport, int depthBuffer) {
+    protected void innerPrimaryWork(Viewport<?> viewport, int depthBuffer, int depthWidth, int depthHeight) {
 
         //Compute the mip chain
-        viewport.hiZBuffer.buildMipChain(depthBuffer, viewport.width, viewport.height);
+        viewport.hiZBuffer.buildMipChain(depthBuffer, depthWidth, depthHeight);
 
         do {
             TimingStatistics.main.stop();

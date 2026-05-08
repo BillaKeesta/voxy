@@ -43,6 +43,15 @@ bool _frustumCulled = false;
 
 float _screenSize = 0.0f;
 
+#ifdef VOXY_HIZ_TRACE
+float _hizPointSample = -1.0f;
+float _hizMipLevel = -1.0f;
+ivec2 _hizLevelSize = ivec2(0);
+ivec2 _hizMinTexel = ivec2(0);
+ivec2 _hizMaxTexel = ivec2(0);
+float _hizDepthMargin = 0.0f;
+#endif
+
 #ifdef TAA
 vec2 getTAA();
 #endif
@@ -148,6 +157,25 @@ bool outsideFrustum() {
 }
 
 bool isCulledByHiz() {
+    #ifdef VOXY_DISABLE_HIZ_CULL
+    return false;
+    #endif
+
+    #ifdef VOXY_HIZ_TRACE
+    _hizPointSample = -1.0f;
+    _hizMipLevel = -1.0f;
+    _hizLevelSize = ivec2(0);
+    _hizMinTexel = ivec2(0);
+    _hizMaxTexel = ivec2(0);
+    _hizDepthMargin = 0.0f;
+    #endif
+
+    #ifdef VOXY_HIZ_SKIP_DESCENDING_NODES
+    if (node22.lodLevel != 0 && _screenSize > minSSS) {
+        return false;
+    }
+    #endif
+
     //if (node22.lodLevel!=0) return false;
 
     //Things start breaking down if the area is the entire scree, no idea why, just abort if we hit this case
@@ -167,6 +195,13 @@ bool isCulledByHiz() {
     ivec2 mxbb = min(ivec2(ceil(_maxBB.xy*ssize)),ssize-1);
     ivec2 mnbb = ivec2(floor(_minBB.xy*ssize));
 
+    #ifdef VOXY_HIZ_TRACE
+    _hizMipLevel = miplevel;
+    _hizLevelSize = ssize;
+    _hizMinTexel = mnbb;
+    _hizMaxTexel = mxbb;
+    #endif
+
     float pointSample = -1.0f;
     //float pointSample2 = 0.0f;
     for (int x = mnbb.x; x<=mxbb.x; x++) {
@@ -178,6 +213,10 @@ bool isCulledByHiz() {
         }
     }
     //pointSample = mix(pointSample, pointSample2, pointSample<=0.000001f);
+    #ifdef VOXY_HIZ_TRACE
+    _hizPointSample = pointSample;
+    _hizDepthMargin = _minBB.z - pointSample;
+    #endif
     return pointSample<_minBB.z-0.000001f;;////(minBB.z*2-1);
 }
 

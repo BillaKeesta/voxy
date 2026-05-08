@@ -31,6 +31,8 @@ import static me.cortex.voxy.common.world.WorldEngine.UPDATE_TYPE_BLOCK_BIT;
 
 public class NodeManager {
     private static final boolean VERIFY_NODE_MANAGER_OPERATIONS = true;//VoxyCommon.isVerificationFlagOn("nodeManager");
+    private static final boolean DEBUG_NODE_REQUEST_TRACE = Boolean.getBoolean("voxy.debugNodeRequestTrace") || Boolean.getBoolean("voxy.debugMissingSectionTrace") || Boolean.getBoolean("voxy.debugRetryMissingSections");
+    private static final boolean DEBUG_CANCEL_ZERO_CHILD_TOP_LEVEL_REQUESTS = Boolean.getBoolean("voxy.debugCancelZeroChildTopLevelRequests");
     //Assumptions:
     // all nodes have children (i.e. all nodes have at least one child existence bit set at all times)
     // leaf nodes always contain geometry (empty geometry counts as geometry (it just doesnt take any memory to store))
@@ -92,6 +94,8 @@ public class NodeManager {
 
     private IntConsumer topLevelNodeIdAddedCallback;
     private IntConsumer topLevelNodeIdRemovedCallback;
+    private int debugNodeRequestTraceCount;
+    private int debugZeroChildTopLevelRequestCount;
 
     public interface ICleaner {
         void alloc(int id);
@@ -103,6 +107,22 @@ public class NodeManager {
     private void clearAllocId(int id) { if (this.cleanerInterface != null) this.cleanerInterface.alloc(id); }
     private void clearMoveId(int from, int to) { if (this.cleanerInterface != null) this.cleanerInterface.move(from, to); }
     private void clearFreeId(int id) { if (this.cleanerInterface != null) this.cleanerInterface.free(id); }
+
+    private void debugRequestResult(String stage, long pos, int mesh, byte childExistence) {
+        if (!DEBUG_NODE_REQUEST_TRACE || this.debugNodeRequestTraceCount >= 128) {
+            return;
+        }
+        boolean emptyMesh = mesh == EMPTY_GEOMETRY_ID;
+        boolean nullMesh = mesh == NULL_GEOMETRY_ID;
+        if (!emptyMesh && !nullMesh && childExistence != 0) {
+            return;
+        }
+        Logger.warn("Voxy node request result " + stage +
+                " pos=" + WorldEngine.pprintPos(pos) +
+                " mesh=" + mesh +
+                " childExistence=0x" + Integer.toHexString(Byte.toUnsignedInt(childExistence)));
+        this.debugNodeRequestTraceCount++;
+    }
 
     public void setTLNCallbacks(IntConsumer onAdd, IntConsumer onRemove) {
         this.topLevelNodeIdAddedCallback = onAdd;
@@ -826,6 +846,7 @@ public class NodeManager {
 
     private void finishRequest(SingleNodeRequest request) {
         int id = this.nodeData.allocate();
+        this.debugRequestResult("singleFinish", request.getPosition(), request.getMesh(), request.getChildExistence());
         this.nodeData.setNodePosition(id, request.getPosition());
         this.nodeData.setNodeGeometry(id, request.getMesh());
         this.nodeData.setNodeChildExistence(id, request.getChildExistence());
@@ -888,6 +909,7 @@ public class NodeManager {
                 //Fill in node
                 this.nodeData.setNodePosition(childNodeId, childPos);
                 byte childExistence = request.getChildChildExistence(childIdx);
+                this.debugRequestResult("leafChildFinish", childPos, request.getChildMesh(childIdx), childExistence);
                 if (childExistence == 0) {
                     //This is an ok error if it happens the request with a child state should never be zero
 
@@ -992,6 +1014,7 @@ public class NodeManager {
 
                     this.nodeData.setNodePosition(childId, childPos);
                     byte childExistence = request.getChildChildExistence(i);
+                    this.debugRequestResult("innerChildFinish", childPos, request.getChildMesh(i), childExistence);
                     if (childExistence == 0) {
 
                         //TODO: make into warning or log error
@@ -1189,6 +1212,13 @@ public class NodeManager {
 
         this.nodeData.setNodeRequest(nodeId, requestId);
         this.activeNodeRequestCount++;
+        if (DEBUG_CANCEL_ZERO_CHILD_TOP_LEVEL_REQUESTS && request.isSatisfied()) {
+            if (this.debugZeroChildTopLevelRequestCount < 128) {
+                Logger.warn("Voxy canceling zero-child top-level request at " + WorldEngine.pprintPos(pos));
+                this.debugZeroChildTopLevelRequestCount++;
+            }
+            this.finishRequest(requestId, request);
+        }
     }
 
     //A request is received for an inner node position

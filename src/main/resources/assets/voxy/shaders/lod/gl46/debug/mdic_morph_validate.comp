@@ -1,0 +1,63 @@
+#version 450
+
+layout(local_size_x = 128) in;
+
+#define SECTION_METADATA_BUFFER_BINDING 1
+#define INDIRECT_SECTION_LOOKUP_BINDING 2
+#define POSITION_SCRATCH_BINDING 3
+#define POSITION_SCRATCH_ACCESS readonly
+#define VISIBILITY_BUFFER_BINDING 5
+
+#import <voxy:lod/section.glsl>
+#import <voxy:lod/gl46/bindings.glsl>
+
+layout(binding = 4, std430) restrict buffer MdicMorphDebugBuffer {
+    uint morphDebug[];
+};
+
+void recordMorphDebug(uint code, uint drawId, uint sectionCount_, uint sectionId, uvec2 expected, uvec2 got, uint extra) {
+    uint slot = atomicAdd(morphDebug[0], 1u);
+    if (slot == 0u) {
+        morphDebug[1] = code;
+        morphDebug[2] = drawId;
+        morphDebug[3] = sectionCount_;
+        morphDebug[4] = sectionId;
+        morphDebug[5] = expected.x;
+        morphDebug[6] = expected.y;
+        morphDebug[7] = got.x;
+        morphDebug[8] = got.y;
+        morphDebug[9] = extra;
+    }
+}
+
+void main() {
+    uint drawId = gl_GlobalInvocationID.x;
+    uint sectionCount_ = sectionCount;
+    if (drawId >= sectionCount_) {
+        return;
+    }
+
+    uint sectionId = indirectLookup[drawId];
+    if (sectionId >= MDIC_MORPH_DEBUG_MAX_SECTIONS) {
+        recordMorphDebug(101u, drawId, sectionCount_, sectionId, uvec2(0u), positionBuffer[drawId], 0u);
+        return;
+    }
+
+    uint dat = visibilityData[sectionId];
+    if ((dat & 0x7fffffffu) != frameId) {
+        return;
+    }
+
+    uvec2 expected = extractRawPos(sectionData[sectionId]);
+    uvec2 got = positionBuffer[drawId];
+
+    if (expected.x != got.x || expected.y != got.y) {
+        recordMorphDebug(102u, drawId, sectionCount_, sectionId, expected, got, getLoDLevel(got));
+        return;
+    }
+
+    uint lod = getLoDLevel(got);
+    if (lod > MDIC_MORPH_DEBUG_MAX_LOD_LAYER) {
+        recordMorphDebug(103u, drawId, sectionCount_, sectionId, expected, got, lod);
+    }
+}

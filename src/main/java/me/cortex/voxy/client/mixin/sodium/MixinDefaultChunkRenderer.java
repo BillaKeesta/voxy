@@ -23,6 +23,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(value = DefaultChunkRenderer.class, remap = false)
 public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
+    @Unique
+    private static final boolean VOXY_DEBUG_LATE_RENDER_AFTER_FLYWHEEL = Boolean.getBoolean("voxy.debugLateRenderAfterFlywheel");
 
     public MixinDefaultChunkRenderer(RenderDevice device, ChunkVertexType vertexType) {
         super(device, vertexType);
@@ -45,6 +47,9 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
 
     @Unique
     private void doRender(ChunkRenderMatrices matrices, TerrainRenderPass renderPass, CameraTransform camera) {
+        if (VOXY_DEBUG_LATE_RENDER_AFTER_FLYWHEEL) {
+            return;
+        }
         if (renderPass == DefaultTerrainRenderPasses.CUTOUT) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).voxy$getRenderSystem();
             if (renderer != null) {

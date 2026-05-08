@@ -34,6 +34,10 @@ import static org.lwjgl.opengl.GL45.*;
 // TODO: swap to persistent gpu threads instead of dispatching MAX_ITERATIONS of compute layers
 public class HierarchicalOcclusionTraverser {
     public static final boolean HIERARCHICAL_SHADER_DEBUG = System.getProperty("voxy.hierarchicalShaderDebug", "false").equals("true");
+    public static final boolean DISABLE_HIZ_CULL = Boolean.parseBoolean(System.getProperty("voxy.debugDisableHizCull", "false"));
+    public static final boolean HIZ_TRACE = Boolean.parseBoolean(System.getProperty("voxy.debugHizTrace", "false"));
+    public static final boolean HIZ_SKIP_DESCENDING_NODES = Boolean.parseBoolean(System.getProperty("voxy.debugHizSkipDescendingNodes", "false"));
+    public static final boolean TRAVERSAL_TRACE = Boolean.parseBoolean(System.getProperty("voxy.debugTraversalTrace", "false")) || HIZ_TRACE;
 
     public static final int MAX_REQUEST_QUEUE_SIZE = 50;
     public static final int MAX_QUEUE_SIZE = 200_000;
@@ -41,16 +45,37 @@ public class HierarchicalOcclusionTraverser {
 
     private static final int MAX_ITERATIONS = WorldEngine.MAX_LOD_LAYER+1;
     private static final int LOCAL_WORK_SIZE_BITS = 5;
+    private static final int TRAVERSAL_TRACE_REASON_COUNT = 10;
+    private static final int TRAVERSAL_TRACE_SAMPLE_STRIDE = HIZ_TRACE ? 32 : 16;
+    private static final int TRAVERSAL_TRACE_BUFFER_SIZE = (16 + TRAVERSAL_TRACE_REASON_COUNT * TRAVERSAL_TRACE_SAMPLE_STRIDE) * 4;
+    private static final int TRAVERSAL_TRACE_LOG_INTERVAL = Integer.getInteger("voxy.debugTraversalTraceInterval", 120);
+    private static final String[] TRAVERSAL_TRACE_NAMES = {
+            "unused",
+            "renderDistance",
+            "frustum",
+            "hiz",
+            "descendChildren",
+            "requestFallbackRender",
+            "renderMesh",
+            "requestDescend",
+            "meshPosMismatch",
+            "meshIdOob"
+    };
 
     private final AsyncNodeManager nodeManager;
     private final NodeCleaner nodeCleaner;
     private final RenderGenerationService meshGen;
+    private final GlBuffer sectionMetadataBuffer;
+    private final int maxSectionCount;
 
     private final GlBuffer requestBuffer;
 
     private final GlBuffer nodeBuffer;
     private final GlBuffer uniformBuffer = new GlBuffer(1024).zero();
     private final GlBuffer statisticsBuffer = new GlBuffer(1024).zero();
+    private final GlBuffer traversalTraceBuffer = TRAVERSAL_TRACE ? new GlBuffer(TRAVERSAL_TRACE_BUFFER_SIZE).zero() : null;
+    private int traversalTraceFrame;
+    private int traversalTraceMismatchLogCount;
 
 
     private int topNodeCount;
@@ -72,6 +97,8 @@ public class HierarchicalOcclusionTraverser {
     private static final int NODE_QUEUE_SINK_BINDING = BINDING_COUNTER++;
     private static final int RENDER_TRACKER_BINDING = BINDING_COUNTER++;
     private static final int STATISTICS_BUFFER_BINDING = BINDING_COUNTER++;
+    private static final int TRAVERSAL_DEBUG_BINDING = BINDING_COUNTER++;
+    private static final int TRAVERSAL_SECTION_METADATA_BUFFER_BINDING = BINDING_COUNTER++;
 
     private final int hizSampler = glGenSamplers();
 
@@ -79,10 +106,12 @@ public class HierarchicalOcclusionTraverser {
 
     private AbstractRenderPipeline pipeline;//Used to bind shader taa uniforms
 
-    public HierarchicalOcclusionTraverser(AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, RenderGenerationService meshGen) {
+    public HierarchicalOcclusionTraverser(AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, RenderGenerationService meshGen, GlBuffer sectionMetadataBuffer, int maxSectionCount) {
         this.nodeCleaner = nodeCleaner;
         this.nodeManager = nodeManager;
         this.meshGen = meshGen;
+        this.sectionMetadataBuffer = sectionMetadataBuffer;
+        this.maxSectionCount = maxSectionCount;
         this.requestBuffer = new GlBuffer(MAX_REQUEST_QUEUE_SIZE*8L+8).zero();
         this.nodeBuffer = new GlBuffer(nodeManager.maxNodeCount*16L).fill(-1);
 
@@ -97,6 +126,18 @@ public class HierarchicalOcclusionTraverser {
     }
 
     public void lateStageCompile(AbstractRenderPipeline pipeline) {
+        if (DISABLE_HIZ_CULL) {
+            Logger.warn("Voxy HiZ occlusion culling disabled by voxy.debugDisableHizCull");
+        }
+        if (TRAVERSAL_TRACE) {
+            Logger.warn("Voxy traversal trace enabled by voxy.debugTraversalTrace");
+        }
+        if (HIZ_TRACE) {
+            Logger.warn("Voxy HiZ trace enabled by voxy.debugHizTrace");
+        }
+        if (HIZ_SKIP_DESCENDING_NODES) {
+            Logger.warn("Voxy HiZ will not cull nodes that still need LOD descent due to voxy.debugHizSkipDescendingNodes");
+        }
         String taa = pipeline.taaFunction("getTAA");
         var scr = ShaderLoader.parse("voxy:lod/hierarchical/traversal_dev.comp");
         if (taa != null) {
@@ -127,6 +168,14 @@ public class HierarchicalOcclusionTraverser {
             .defineIf("STATISTICS_BUFFER_BINDING", RenderStatistics.enabled, STATISTICS_BUFFER_BINDING)
 
             .defineIf("TAA", taa != null)
+            .defineIf("VOXY_DISABLE_HIZ_CULL", DISABLE_HIZ_CULL)
+            .defineIf("VOXY_HIZ_SKIP_DESCENDING_NODES", HIZ_SKIP_DESCENDING_NODES)
+            .defineIf("VOXY_TRAVERSAL_TRACE", TRAVERSAL_TRACE)
+            .defineIf("VOXY_HIZ_TRACE", HIZ_TRACE)
+            .defineIf("TRAVERSAL_DEBUG_BINDING", TRAVERSAL_TRACE, TRAVERSAL_DEBUG_BINDING)
+            .defineIf("TRAVERSAL_TRACE_SAMPLE_STRIDE", TRAVERSAL_TRACE, TRAVERSAL_TRACE_SAMPLE_STRIDE)
+            .defineIf("TRAVERSAL_SECTION_METADATA_BUFFER_BINDING", TRAVERSAL_TRACE, TRAVERSAL_SECTION_METADATA_BUFFER_BINDING)
+            .defineIf("VOXY_TRAVERSAL_TRACE_MAX_SECTIONS", TRAVERSAL_TRACE, this.maxSectionCount)
 
             .addSource(ShaderType.COMPUTE, scr)
             .compile();
@@ -138,7 +187,9 @@ public class HierarchicalOcclusionTraverser {
                 .ssbo("NODE_DATA_BINDING", this.nodeBuffer)
                 .ssbo("NODE_QUEUE_META_BINDING", this.queueMetaBuffer)
                 .ssbo("RENDER_TRACKER_BINDING", this.nodeCleaner.visibilityBuffer)
-                .ssboIf("STATISTICS_BUFFER_BINDING", this.statisticsBuffer);
+                .ssboIf("STATISTICS_BUFFER_BINDING", this.statisticsBuffer)
+                .ssboIf("TRAVERSAL_DEBUG_BINDING", this.traversalTraceBuffer)
+                .ssboIf("TRAVERSAL_SECTION_METADATA_BUFFER_BINDING", this.sectionMetadataBuffer);
     }
 
     private void addTLN(int id) {
@@ -254,6 +305,10 @@ public class HierarchicalOcclusionTraverser {
         if (RenderStatistics.enabled) {
             this.statisticsBuffer.zero();
         }
+        if (TRAVERSAL_TRACE) {
+            this.traversalTraceBuffer.zeroRange(0, TRAVERSAL_TRACE_BUFFER_SIZE);
+            glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+        }
 
         //Clear the render output counter
         nglClearNamedBufferSubData(viewport.getRenderList().id, GL_R32UI, 0, 4, GL_RED_INTEGER, GL_UNSIGNED_INT, 0);
@@ -262,6 +317,7 @@ public class HierarchicalOcclusionTraverser {
         this.traverseInternal();
 
         this.downloadResetRequestQueue();
+        this.downloadTraversalTrace();
 
         if (RenderStatistics.enabled) {
             DownloadStream.INSTANCE.download(this.statisticsBuffer, down->{
@@ -391,7 +447,105 @@ public class HierarchicalOcclusionTraverser {
         this.topNodeIds.free();
         this.scratchQueueA.free();
         this.scratchQueueB.free();
+        if (this.traversalTraceBuffer != null) this.traversalTraceBuffer.free();
         glDeleteSamplers(this.hizSampler);
+    }
+
+    private void downloadTraversalTrace() {
+        if (!TRAVERSAL_TRACE) {
+            return;
+        }
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        DownloadStream.INSTANCE.download(this.traversalTraceBuffer, 0, TRAVERSAL_TRACE_BUFFER_SIZE, this::processTraversalTraceResult);
+    }
+
+    private void processTraversalTraceResult(long ptr, long size) {
+        int frame = this.traversalTraceFrame++;
+        boolean hasMismatch = MemoryUtil.memGetInt(ptr + 8L * 4) != 0 || MemoryUtil.memGetInt(ptr + 9L * 4) != 0;
+        boolean shouldLogSummary = frame < 5 || (TRAVERSAL_TRACE_LOG_INTERVAL > 0 && (frame % TRAVERSAL_TRACE_LOG_INTERVAL) == 0);
+        if (!hasMismatch && !shouldLogSummary) {
+            return;
+        }
+
+        if (shouldLogSummary) {
+            StringBuilder builder = new StringBuilder("Voxy traversal trace frame=").append(frame).append(" counts");
+            for (int code = 1; code < TRAVERSAL_TRACE_REASON_COUNT; code++) {
+                builder.append(' ').append(TRAVERSAL_TRACE_NAMES[code]).append('=').append(Integer.toUnsignedLong(MemoryUtil.memGetInt(ptr + code * 4L)));
+            }
+            Logger.warn(builder.toString());
+            for (int code = 1; code < TRAVERSAL_TRACE_REASON_COUNT; code++) {
+                if (MemoryUtil.memGetInt(ptr + code * 4L) != 0) {
+                    this.logTraversalTraceSample(ptr, code, false);
+                }
+            }
+        }
+
+        if (hasMismatch && this.traversalTraceMismatchLogCount < 64) {
+            if (MemoryUtil.memGetInt(ptr + 8L * 4) != 0) {
+                this.logTraversalTraceSample(ptr, 8, true);
+            }
+            if (MemoryUtil.memGetInt(ptr + 9L * 4) != 0) {
+                this.logTraversalTraceSample(ptr, 9, true);
+            }
+            this.traversalTraceMismatchLogCount++;
+        } else if (hasMismatch && this.traversalTraceMismatchLogCount == 64) {
+            Logger.warn("Voxy traversal trace suppressing further node/mesh mismatch logs");
+            this.traversalTraceMismatchLogCount++;
+        }
+    }
+
+    private void logTraversalTraceSample(long ptr, int code, boolean error) {
+        long base = ptr + (16L + (long) code * TRAVERSAL_TRACE_SAMPLE_STRIDE) * 4L;
+        if (MemoryUtil.memGetInt(base) == 0) {
+            return;
+        }
+        int nodeId = MemoryUtil.memGetInt(base + 4);
+        long rawX = Integer.toUnsignedLong(MemoryUtil.memGetInt(base + 8));
+        long rawY = Integer.toUnsignedLong(MemoryUtil.memGetInt(base + 12));
+        int posX = MemoryUtil.memGetInt(base + 16);
+        int posY = MemoryUtil.memGetInt(base + 20);
+        int posZ = MemoryUtil.memGetInt(base + 24);
+        int lod = MemoryUtil.memGetInt(base + 28);
+        int mesh = MemoryUtil.memGetInt(base + 32);
+        int childPtr = MemoryUtil.memGetInt(base + 36);
+        int flags = MemoryUtil.memGetInt(base + 40);
+        float screenSize = Float.intBitsToFloat(MemoryUtil.memGetInt(base + 44));
+        float minSSS = Float.intBitsToFloat(MemoryUtil.memGetInt(base + 48));
+        long extraA = Integer.toUnsignedLong(MemoryUtil.memGetInt(base + 52));
+        long extraB = Integer.toUnsignedLong(MemoryUtil.memGetInt(base + 56));
+        long extraC = Integer.toUnsignedLong(MemoryUtil.memGetInt(base + 60));
+
+        String message = "Voxy traversal trace sample reason=" + TRAVERSAL_TRACE_NAMES[code] +
+                " node=" + nodeId +
+                " pos=" + lod + "@[" + posX + "," + posY + "," + posZ + "]" +
+                " raw=(" + rawX + "," + rawY + ")" +
+                " mesh=" + mesh +
+                " childPtr=" + childPtr +
+                " flags=" + flags +
+                " screenSize=" + screenSize +
+                " minSSS=" + minSSS +
+                " extra=(" + extraA + "," + extraB + "," + extraC + ")";
+        if (HIZ_TRACE && code == 3) {
+            message += " hiz" +
+                    " minBB=[" + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 64)) +
+                    "," + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 68)) +
+                    "," + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 72)) + "]" +
+                    " maxBB=[" + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 76)) +
+                    "," + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 80)) +
+                    "," + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 84)) + "]" +
+                    " pointSample=" + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 88)) +
+                    " depthMargin=" + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 92)) +
+                    " mip=" + Float.intBitsToFloat(MemoryUtil.memGetInt(base + 96)) +
+                    " packedSize=" + Integer.toUnsignedLong(MemoryUtil.memGetInt(base + 100)) +
+                    " levelSize=[" + MemoryUtil.memGetInt(base + 104) + "," + MemoryUtil.memGetInt(base + 108) + "]" +
+                    " texels=[" + MemoryUtil.memGetInt(base + 112) + "," + MemoryUtil.memGetInt(base + 116) +
+                    "]-[" + MemoryUtil.memGetInt(base + 120) + "," + MemoryUtil.memGetInt(base + 124) + "]";
+        }
+        if (error) {
+            Logger.error(message);
+        } else {
+            Logger.warn(message);
+        }
     }
 
     private static final long SCRATCH = MemoryUtil.nmemAlloc(32);//32 bytes of scratch memory

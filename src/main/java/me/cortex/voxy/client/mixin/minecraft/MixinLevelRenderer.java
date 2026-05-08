@@ -9,8 +9,14 @@ import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
+import net.caffeinemc.mods.sodium.client.render.chunk.ChunkRenderMatrices;
+import net.minecraft.client.Camera;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.LightTexture;
+import org.joml.Matrix4f;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -21,8 +27,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(LevelRenderer.class)
 public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
+    @Unique private static final boolean VOXY_DEBUG_LATE_RENDER_AFTER_FLYWHEEL = Boolean.getBoolean("voxy.debugLateRenderAfterFlywheel");
     @Shadow private @Nullable ClientLevel level;
     @Unique private VoxyRenderSystem renderer;
+    @Unique private boolean voxy$lateRenderAfterFlywheelLogged;
 
     @Override
     public VoxyRenderSystem voxy$getRenderSystem() {
@@ -47,6 +55,31 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
     @Inject(method = "close", at = @At("HEAD"))
     private void voxy$injectClose(CallbackInfo ci) {
         this.voxy$shutdownRenderer();
+    }
+
+    @Inject(method = "renderLevel", at = @At("TAIL"))
+    private void voxy$debugLateRenderAfterFlywheel(
+            DeltaTracker tickCounter,
+            boolean renderBlockOutline,
+            Camera camera,
+            GameRenderer gameRenderer,
+            LightTexture lightTexture,
+            Matrix4f positionMatrix,
+            Matrix4f projectionMatrix,
+            CallbackInfo ci) {
+        if (!VOXY_DEBUG_LATE_RENDER_AFTER_FLYWHEEL || IrisUtil.irisShaderPackEnabled()) {
+            return;
+        }
+        if (this.renderer == null) {
+            return;
+        }
+        if (!this.voxy$lateRenderAfterFlywheelLogged) {
+            Logger.warn("Voxy rendering at LevelRenderer.renderLevel tail due to voxy.debugLateRenderAfterFlywheel");
+            this.voxy$lateRenderAfterFlywheelLogged = true;
+        }
+        var pos = camera.getPosition();
+        var viewport = this.renderer.setupViewport(new ChunkRenderMatrices(projectionMatrix, positionMatrix), pos.x, pos.y, pos.z);
+        this.renderer.renderOpaque(viewport);
     }
 
     @Override

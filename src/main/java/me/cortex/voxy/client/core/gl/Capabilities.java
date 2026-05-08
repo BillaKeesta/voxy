@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.gl;
 
+import com.mojang.blaze3d.platform.GlStateManager;
 import me.cortex.voxy.client.core.gl.shader.ShaderType;
 import me.cortex.voxy.common.Logger;
 import org.lwjgl.opengl.GL;
@@ -166,7 +167,7 @@ public class Capabilities {
                 nglClearNamedBufferSubData(buffer, GL_R32F, 0, 4096, GL_RED, GL_FLOAT, 0);//Zero the buffer
                 glClearNamedFramebufferfi(fb, GL_DEPTH_STENCIL, 0, value, 1);//Set the depth texture
 
-                glUseProgram(program);
+                GlStateManager._glUseProgram(program);
                 glUniform1i(2, lvl);
                 glUniform1f(3, value);
                 glBindTextureUnit(0, tex);
@@ -179,9 +180,9 @@ public class Capabilities {
                 float gottenValue = MemoryUtil.memGetFloat(ptr);
                 glUnmapNamedBuffer(buffer);
 
-                glUseProgram(0);
+                GlStateManager._glUseProgram(0);
                 glBindTextureUnit(0, 0);
-                glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+                GlStateManager._glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
                 boolean localCorrect = gottenValue==0.0f;
                 if (!localCorrect) {

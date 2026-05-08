@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.util.Pair;
@@ -24,6 +25,9 @@ import java.util.function.Consumer;
 // and process accordingly
 public class RenderGenerationService {
     private static final int MAX_HOLDING_SECTION_COUNT = 1000;
+    private static final boolean DEBUG_RETRY_MISSING_SECTIONS = Boolean.getBoolean("voxy.debugRetryMissingSections");
+    private static final boolean DEBUG_MISSING_SECTION_TRACE = DEBUG_RETRY_MISSING_SECTIONS || Boolean.getBoolean("voxy.debugMissingSectionTrace");
+    private static final int DEBUG_MISSING_SECTION_MAX_RETRIES = Integer.getInteger("voxy.debugMissingSectionRetries", 64);
 
     public static final AtomicInteger MESH_FAILED_COUNTER = new AtomicInteger();
     private static final AtomicInteger COUNTER = new AtomicInteger();
@@ -33,6 +37,7 @@ public class RenderGenerationService {
         boolean hasDoneModelRequestInner;
         boolean hasDoneModelRequestOuter;
         int attempts;
+        int missingSectionAttempts;
         int addin;
         long priority = Long.MIN_VALUE;
         private BuildTask(long position) {
@@ -42,7 +47,8 @@ public class RenderGenerationService {
             int unique = COUNTER.incrementAndGet();
             int lvl = WorldEngine.MAX_LOD_LAYER-WorldEngine.getLevel(this.position);
             lvl = Math.min(lvl, 3);//Make the 2 highest quality have equal priority
-            this.priority = (((lvl*3L + Math.min(this.attempts, 3))*2 + this.addin) <<32) + Integer.toUnsignedLong(unique);
+            int retryAttempts = Math.max(this.attempts, this.missingSectionAttempts);
+            this.priority = (((lvl*3L + Math.min(retryAttempts, 3))*2 + this.addin) <<32) + Integer.toUnsignedLong(unique);
             this.addin = 0;
         }
     }
@@ -126,6 +132,27 @@ public class RenderGenerationService {
         return WorldEngine.getLevel(pos) > 2;
     }
 
+    private boolean requeueTask(BuildTask task) {
+        long stamp = this.taskMapLock.writeLock();
+        BuildTask other = this.taskMap.putIfAbsent(task.position, task);
+        this.taskMapLock.unlockWrite(stamp);
+        if (other != null) {
+            return false;
+        }
+
+        this.enqueueMappedTask(task);
+        return true;
+    }
+
+    private void enqueueMappedTask(BuildTask task) {
+        task.updatePriority();
+        this.taskQueue.add(task);
+        this.taskQueueCount.incrementAndGet();
+        if (this.service.isLive()) {
+            this.service.execute();
+        }
+    }
+
     //TODO: add a generated render data cache
     private void processJob(RenderDataFactory factory, IntOpenHashSet seenMissedIds) {
         BuildTask task = this.taskQueue.poll();
@@ -153,10 +180,30 @@ public class RenderGenerationService {
         }
 
         if (section == null) {
+            if (DEBUG_RETRY_MISSING_SECTIONS && task.missingSectionAttempts < DEBUG_MISSING_SECTION_MAX_RETRIES && this.service.isLive()) {
+                task.missingSectionAttempts++;
+                task.addin = 1;
+                boolean requeued = this.requeueTask(task);
+                if (requeued) {
+                    if (task.missingSectionAttempts <= 8 || (task.missingSectionAttempts & 15) == 0) {
+                        Logger.warn("Voxy missing-section mesh request requeued attempt " + task.missingSectionAttempts + "/" + DEBUG_MISSING_SECTION_MAX_RETRIES + " at " + WorldEngine.pprintPos(task.position));
+                    }
+                    return;
+                }
+                if (DEBUG_MISSING_SECTION_TRACE) {
+                    Logger.warn("Voxy missing-section mesh request was replaced before retry at " + WorldEngine.pprintPos(task.position));
+                }
+            }
+            if (DEBUG_MISSING_SECTION_TRACE) {
+                Logger.warn("Voxy missing-section mesh request finalized as empty after " + task.missingSectionAttempts + " retries at " + WorldEngine.pprintPos(task.position));
+            }
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(BuiltSection.empty(task.position));
             }
             return;
+        }
+        if (DEBUG_MISSING_SECTION_TRACE && task.missingSectionAttempts != 0) {
+            Logger.warn("Voxy missing-section mesh request recovered after " + task.missingSectionAttempts + " retries at " + WorldEngine.pprintPos(task.position));
         }
         section.assertNotFree();
         BuiltSection mesh = null;
@@ -249,13 +296,7 @@ public class RenderGenerationService {
                     shouldFreeSection = false;
                 }
 
-                task.updatePriority();
-                this.taskQueue.add(task);
-                this.taskQueueCount.incrementAndGet();
-
-                if (this.service.isLive()) {//Only execute if were not dead
-                    this.service.execute();//Since we put in queue, release permit
-                }
+                this.enqueueMappedTask(task);
             }
         }
 

@@ -16,6 +16,8 @@ import net.minecraft.client.renderer.RenderType;
 
 @Mixin(value = SodiumWorldRenderer.class, remap = false)
 public class MixinSodiumWorldRendererVS {
+    @Unique
+    private static final boolean VOXY_DEBUG_LATE_RENDER_AFTER_FLYWHEEL = Boolean.getBoolean("voxy.debugLateRenderAfterFlywheel");
     
     @Unique
     private ChunkRenderMatrices voxy$capturedMatrices;
@@ -32,6 +34,9 @@ public class MixinSodiumWorldRendererVS {
     
     @Unique
     private void doRender(ChunkRenderMatrices matrices, RenderType renderLayer, double x, double y, double z) {
+        if (VOXY_DEBUG_LATE_RENDER_AFTER_FLYWHEEL) {
+            return;
+        }
         if (renderLayer == RenderType.solid()) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).voxy$getRenderSystem();
             if (renderer != null) {

@@ -38,24 +38,32 @@ import net.minecraft.network.chat.Component;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.system.MemoryStack;
 
 import java.util.Arrays;
 import java.util.List;
 
+import static org.lwjgl.opengl.ARBIndirectParameters.GL_PARAMETER_BUFFER_ARB;
 import static org.lwjgl.opengl.GL11.GL_VIEWPORT;
 import static org.lwjgl.opengl.GL11.glEnable;
 import static org.lwjgl.opengl.GL11.glFinish;
 import static org.lwjgl.opengl.GL11.glGetIntegerv;
 import static org.lwjgl.opengl.GL11.glViewport;
 import static org.lwjgl.opengl.GL11C.*;
-import static org.lwjgl.opengl.GL20C.glUseProgram;
+import static org.lwjgl.opengl.GL15C.GL_ARRAY_BUFFER;
+import static org.lwjgl.opengl.GL15C.glBindBuffer;
 import static org.lwjgl.opengl.GL30.glGetIntegeri;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL33.glBindSampler;
+import static org.lwjgl.opengl.GL40C.GL_DRAW_INDIRECT_BUFFER;
+import static org.lwjgl.opengl.GL43C.GL_DISPATCH_INDIRECT_BUFFER;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
 
 public class VoxyRenderSystem {
+    private static final boolean DEBUG_GL_STATE = Boolean.parseBoolean(System.getProperty("voxy.debugGlState", "false"));
+    private static int glStateLogCount;
+
     private final WorldEngine worldIn;
 
 
@@ -127,11 +135,12 @@ public class VoxyRenderSystem {
                 this.modelService = new ModelBakerySubsystem(world.getMapper());
                 this.renderGen = new RenderGenerationService(world, this.modelService, sm, IUsesMeshlets.class.isAssignableFrom(backendFactory.clz()));
 
-                this.geometryData = new BasicSectionGeometryData(1<<20, RenderResourceReuse.getOrCreateGeometryBuffer());
+                BasicSectionGeometryData geometryData = new BasicSectionGeometryData(1<<20, RenderResourceReuse.getOrCreateGeometryBuffer());
+                this.geometryData = geometryData;
 
                 this.nodeManager = new AsyncNodeManager(1 << 21, this.geometryData, this.renderGen);
                 this.nodeCleaner = new NodeCleaner(this.nodeManager);
-                this.traversal = new HierarchicalOcclusionTraverser(this.nodeManager, this.nodeCleaner, this.renderGen);
+                this.traversal = new HierarchicalOcclusionTraverser(this.nodeManager, this.nodeCleaner, this.renderGen, geometryData.getMetadataBuffer(), geometryData.getMaxSectionCount());
 
                 world.setDirtyCallback(this.nodeManager::worldEvent);
 
@@ -244,6 +253,8 @@ public class VoxyRenderSystem {
             return;//Only render on valid viewport
         }
 
+        this.resetExternalGlState("entry");
+
         TimingStatistics.resetSamplers();
 
         TimingStatistics.all.start();
@@ -315,11 +326,17 @@ public class VoxyRenderSystem {
         glViewport(dims[0], dims[1], dims[2], dims[3]);
 
         {//Reset state manager stuffs
-            glUseProgram(0);
+            GlStateManager._glUseProgram(0);
+            this.resetExternalGlState("exit");
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_STENCIL_TEST);
 
             GlStateManager._glBindVertexArray(0);//Clear binding
+            GlStateManager._glBindBuffer(GL_ARRAY_BUFFER, 0);
+            GlStateManager._glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+            GlStateManager._glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+            GlStateManager._glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            glBindBuffer(GL_PARAMETER_BUFFER_ARB, 0);
 
             GlStateManager._activeTexture(GlConst.GL_TEXTURE1);
             for (int i = 0; i < 12; i++) {
@@ -368,6 +385,66 @@ public class VoxyRenderSystem {
         this.postProcessing.renderPost(viewport, matrices.projection(), boundFB);
         TimingStatistics.F.stop();
          */
+    }
+
+    private void resetExternalGlState(String stage) {
+        if (DEBUG_GL_STATE) {
+            this.logExternalGlState(stage);
+        }
+
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_RASTERIZER_DISCARD);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glDisable(GL_POLYGON_OFFSET_LINE);
+        glDisable(GL_POLYGON_OFFSET_POINT);
+        glDisable(GL_BLEND);
+
+        glColorMask(true, true, true, true);
+        glDepthMask(true);
+        glStencilMask(0xFF);
+        glDepthRange(0.0, 1.0);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glFrontFace(GL_CCW);
+        glCullFace(GL_BACK);
+    }
+
+    private void logExternalGlState(String stage) {
+        if (glStateLogCount >= 80) {
+            return;
+        }
+
+        boolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+        boolean rasterizerDiscard = glIsEnabled(GL_RASTERIZER_DISCARD);
+        boolean polygonOffsetFill = glIsEnabled(GL_POLYGON_OFFSET_FILL);
+        boolean polygonOffsetLine = glIsEnabled(GL_POLYGON_OFFSET_LINE);
+        boolean polygonOffsetPoint = glIsEnabled(GL_POLYGON_OFFSET_POINT);
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            var scissorBox = stack.mallocInt(4);
+            var depthRange = stack.mallocDouble(2);
+            glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
+            glGetDoublev(GL_DEPTH_RANGE, depthRange);
+
+            double depthNear = depthRange.get(0);
+            double depthFar = depthRange.get(1);
+            boolean suspicious = scissor ||
+                    rasterizerDiscard ||
+                    polygonOffsetFill ||
+                    polygonOffsetLine ||
+                    polygonOffsetPoint ||
+                    Math.abs(depthNear) > 0.0000001 ||
+                    Math.abs(depthFar - 1.0) > 0.0000001;
+
+            if (suspicious || glStateLogCount < 8) {
+                Logger.warn("Voxy GL state before reset stage=" + stage +
+                        " scissor=" + scissor +
+                        " scissorBox=[" + scissorBox.get(0) + "," + scissorBox.get(1) + "," + scissorBox.get(2) + "," + scissorBox.get(3) + "]" +
+                        " rasterizerDiscard=" + rasterizerDiscard +
+                        " polygonOffset(fill,line,point)=[" + polygonOffsetFill + "," + polygonOffsetLine + "," + polygonOffsetPoint + "]" +
+                        " depthRange=[" + depthNear + "," + depthFar + "]");
+                glStateLogCount++;
+            }
+        }
     }
 
 

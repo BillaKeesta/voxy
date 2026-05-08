@@ -37,6 +37,7 @@ import static org.lwjgl.opengl.GL30.glBindVertexArray;
 import static org.lwjgl.opengl.GL31.GL_UNIFORM_BUFFER;
 import static org.lwjgl.opengl.GL33.glBindSampler;
 import static org.lwjgl.opengl.GL40C.GL_DRAW_INDIRECT_BUFFER;
+import static org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT;
 import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL43.*;
 import static org.lwjgl.opengl.GL45.glBindTextureUnit;
@@ -52,8 +53,20 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private static final int TRANSLUCENT_OFFSET = OPAQUE_DRAW_COUNT;//in draw calls
     private static final int TEMPORAL_OFFSET = TRANSLUCENT_OFFSET+TRANSLUCENT_DRAW_COUNT;//in draw calls
     private static final int STATISTICS_BUFFER_BINDING = 8;
+    private static final boolean MORPH_DEBUG = Boolean.parseBoolean(System.getProperty("voxy.debugMdicMorph", "false"));
+    private static final boolean VERTEX_BOUNDS_DEBUG = Boolean.parseBoolean(System.getProperty("voxy.debugVertexBounds", "false"));
+    private static final boolean COLOR_LOD_DEBUG = Boolean.parseBoolean(System.getProperty("voxy.debugColorLod", "false"));
+    private static final boolean DISABLE_TEMPORAL_RENDER = Boolean.parseBoolean(System.getProperty("voxy.debugDisableTemporalRender", "false"));
+    private static final boolean RENDER_DEBUG_BUFFER = MORPH_DEBUG || VERTEX_BOUNDS_DEBUG;
+    private static final int RENDER_DEBUG_BUFFER_SIZE = 128;
+    private static final int RENDER_DEBUG_BUFFER_BINDING = 9;
     private final Shader terrainShader;
     private final Shader translucentTerrainShader;
+    private final Shader morphDebugValidateShader = MORPH_DEBUG ? Shader.make()
+            .define("MDIC_MORPH_DEBUG_MAX_SECTIONS", 1 << 20)
+            .define("MDIC_MORPH_DEBUG_MAX_LOD_LAYER", WorldEngine.MAX_LOD_LAYER)
+            .add(ShaderType.COMPUTE, "voxy:lod/gl46/debug/mdic_morph_validate.comp")
+            .compile() : null;
 
     private final Shader commandGenShader = Shader.make()
             .define("TRANSLUCENT_WRITE_BASE", 1024)
@@ -94,6 +107,9 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
     //Statistics
     private final GlBuffer statisticsBuffer = new GlBuffer(1024).zero();
+    private final GlBuffer morphDebugBuffer = RENDER_DEBUG_BUFFER ? new GlBuffer(RENDER_DEBUG_BUFFER_SIZE).zero() : null;
+    private int morphDebugLogCount = 0;
+    private boolean temporalDisableLogged = false;
 
     private final AbstractRenderPipeline pipeline;
     public MDICSectionRenderer(AbstractRenderPipeline pipeline, ModelStore modelStore, BasicSectionGeometryData geometryData) {
@@ -108,7 +124,12 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         }
         var builder = Shader.make()
                 .defineIf("TAA_PATCH", taa != null)
-                .defineIf("DEBUG_RENDER", false)
+                .defineIf("DEBUG_RENDER", COLOR_LOD_DEBUG)
+                .defineIf("VOXY_DEBUG_COLOR_LOD", COLOR_LOD_DEBUG)
+                .defineIf("VOXY_MDIC_MORPH_DEBUG", MORPH_DEBUG)
+                .defineIf("VOXY_VERTEX_BOUNDS_DEBUG", VERTEX_BOUNDS_DEBUG)
+                .defineIf("VOXY_RENDER_DEBUG_BUFFER_BINDING", RENDER_DEBUG_BUFFER, RENDER_DEBUG_BUFFER_BINDING)
+                .defineIf("MDIC_MORPH_DEBUG_MAX_SECTIONS", RENDER_DEBUG_BUFFER, geometryData.getMaxSectionCount())
 
                 //.defineIf("USE_NV_JANK", Capabilities.INSTANCE.isNvidia)//TODO: fix use capability to try compile the jank thing to see if it can be and use that
 
@@ -172,6 +193,10 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, this.geometryManager.getMetadataBuffer().id);
         this.modelStore.bind(3, 4, 0);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, viewport.positionScratchBuffer.id);
+        if (RENDER_DEBUG_BUFFER) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, viewport.indirectLookupBuffer.id);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, RENDER_DEBUG_BUFFER_BINDING, this.morphDebugBuffer.id);
+        }
         LightMapHelper.bind(1);
         glBindTextureUnit(2, viewport.depthBoundingBuffer.getDepthTex().id);
 
@@ -180,7 +205,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         glBindBuffer(GL_PARAMETER_BUFFER_ARB, viewport.drawCountCallBuffer.id);
     }
 
-    private void renderTerrain(MDICViewport viewport, long indirectOffset, long drawCountOffset, int maxDrawCount) {
+    private void renderTerrain(MDICViewport viewport, long indirectOffset, long drawCountOffset, int maxDrawCount, int debugPass) {
         //RenderLayer.getCutoutMipped().startDrawing();
 
 
@@ -194,12 +219,14 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         this.bindRenderingBuffers(viewport);
 
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);//Barrier everything is needed
+        this.clearMorphDebugBuffer();
         glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
 
         if (VoxyClient.getOcclusionDebugState()==3) {
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         }
         glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_SHORT, indirectOffset, drawCountOffset, maxDrawCount, 0);
+        this.downloadMorphDebugResult("vertex", debugPass);
         if (VoxyClient.getOcclusionDebugState()==3) {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
@@ -220,7 +247,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
         this.uploadUniformBuffer(viewport);
 
-        this.renderTerrain(viewport, 0, 4*3, Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), OPAQUE_DRAW_COUNT));
+        this.renderTerrain(viewport, 0, 4*3, Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), OPAQUE_DRAW_COUNT), 1);
     }
 
     @Override
@@ -239,8 +266,10 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         this.bindRenderingBuffers(viewport);
 
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);//Barrier everything is needed
+        this.clearMorphDebugBuffer();
         glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
         glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_SHORT, TRANSLUCENT_OFFSET*5*4, 4*4, Math.min(this.geometryManager.getSectionCount(), TRANSLUCENT_DRAW_COUNT), 0);
+        this.downloadMorphDebugResult("vertex", 2);
 
         glEnable(GL_CULL_FACE);
         glBindVertexArray(0);
@@ -321,6 +350,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
             glDispatchComputeIndirect(0);
             glMemoryBarrier(GL_COMMAND_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);
+            this.validateMorphCommandGeneration(viewport);
 
             if (RenderStatistics.enabled) {
                 DownloadStream.INSTANCE.download(this.statisticsBuffer, down->{
@@ -363,8 +393,15 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     @Override
     public void renderTemporal(MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
+        if (DISABLE_TEMPORAL_RENDER) {
+            if (!this.temporalDisableLogged) {
+                Logger.warn("Voxy temporal render pass disabled by voxy.debugDisableTemporalRender");
+                this.temporalDisableLogged = true;
+            }
+            return;
+        }
         //Render temporal
-        this.renderTerrain(viewport, TEMPORAL_OFFSET*5*4, 4*5, Math.min(this.geometryManager.getSectionCount(), TEMPORAL_DRAW_COUNT));
+        this.renderTerrain(viewport, TEMPORAL_OFFSET*5*4, 4*5, Math.min(this.geometryManager.getSectionCount(), TEMPORAL_DRAW_COUNT), 3);
     }
 
     @Override
@@ -390,5 +427,83 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         this.translucentGenShader.free();
         this.prefixSumShader.free();
         this.statisticsBuffer.free();
+        if (this.morphDebugValidateShader != null) this.morphDebugValidateShader.free();
+        if (this.morphDebugBuffer != null) this.morphDebugBuffer.free();
+    }
+
+    private void validateMorphCommandGeneration(MDICViewport viewport) {
+        if (!MORPH_DEBUG) {
+            return;
+        }
+        this.clearMorphDebugBuffer();
+        this.morphDebugValidateShader.bind();
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, this.uniform.id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, this.geometryManager.getMetadataBuffer().id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, viewport.indirectLookupBuffer.id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, viewport.positionScratchBuffer.id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, this.morphDebugBuffer.id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, viewport.visibilityBuffer.id);
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, viewport.drawCountCallBuffer.id);
+        glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+        glDispatchComputeIndirect(0);
+        glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+        this.downloadMorphDebugResult("cmdgen", 0);
+    }
+
+    private void clearMorphDebugBuffer() {
+        if (!RENDER_DEBUG_BUFFER) {
+            return;
+        }
+        this.morphDebugBuffer.zeroRange(0, RENDER_DEBUG_BUFFER_SIZE);
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    private void downloadMorphDebugResult(String stage, int pass) {
+        if (!RENDER_DEBUG_BUFFER) {
+            return;
+        }
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        DownloadStream.INSTANCE.download(this.morphDebugBuffer, 0, RENDER_DEBUG_BUFFER_SIZE, (ptr, size) -> this.processMorphDebugResult(stage, pass, ptr));
+    }
+
+    private void processMorphDebugResult(String stage, int pass, long ptr) {
+        int count = MemoryUtil.memGetInt(ptr);
+        if (count == 0) {
+            return;
+        }
+        int code = MemoryUtil.memGetInt(ptr + 4);
+        int drawId = MemoryUtil.memGetInt(ptr + 8);
+        int sectionCount = MemoryUtil.memGetInt(ptr + 12);
+        int sectionId = MemoryUtil.memGetInt(ptr + 16);
+        int expectedX = MemoryUtil.memGetInt(ptr + 20);
+        int expectedY = MemoryUtil.memGetInt(ptr + 24);
+        int gotX = MemoryUtil.memGetInt(ptr + 28);
+        int gotY = MemoryUtil.memGetInt(ptr + 32);
+        int extra = MemoryUtil.memGetInt(ptr + 36);
+        int e1 = MemoryUtil.memGetInt(ptr + 40);
+        int e2 = MemoryUtil.memGetInt(ptr + 44);
+        int e3 = MemoryUtil.memGetInt(ptr + 48);
+        int e4 = MemoryUtil.memGetInt(ptr + 52);
+        int e5 = MemoryUtil.memGetInt(ptr + 56);
+        int e6 = MemoryUtil.memGetInt(ptr + 60);
+        int e7 = MemoryUtil.memGetInt(ptr + 64);
+
+        if (this.morphDebugLogCount < 64) {
+            Logger.error("MDIC render debug mismatch stage=" + stage +
+                    " pass=" + pass +
+                    " count=" + count +
+                    " code=" + code +
+                    " drawId=" + drawId +
+                    " sectionCount=" + sectionCount +
+                    " sectionId=" + sectionId +
+                    " expectedRaw=(" + expectedX + "," + expectedY + ")" +
+                    " gotRaw=(" + gotX + "," + gotY + ")" +
+                    " extra=" + extra +
+                    " e=(" + e1 + "," + e2 + "," + e3 + "," + e4 + "," + e5 + "," + e6 + "," + e7 + ")" +
+                    " floats=(" + Float.intBitsToFloat(e5) + "," + Float.intBitsToFloat(e6) + ")");
+        } else if (this.morphDebugLogCount == 64) {
+            Logger.warn("MDIC render debug suppressing further mismatch logs");
+        }
+        this.morphDebugLogCount++;
     }
 }

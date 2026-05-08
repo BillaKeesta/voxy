@@ -5,6 +5,7 @@ import me.cortex.voxy.client.core.gl.GlDebug;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.ThreadUtils;
 import me.cortex.voxy.common.util.TrackedObject;
+import com.mojang.blaze3d.platform.GlStateManager;
 import org.lwjgl.opengl.GL20C;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -16,7 +17,6 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static org.lwjgl.opengl.GL20.glDeleteProgram;
-import static org.lwjgl.opengl.GL20.glUseProgram;
 
 public class Shader extends TrackedObject {
     private final int id;
@@ -29,7 +29,7 @@ public class Shader extends TrackedObject {
     }
 
     public void bind() {
-        glUseProgram(this.id);
+        GlStateManager._glUseProgram(this.id);
     }
 
     public void free() {

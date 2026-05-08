@@ -24,6 +24,95 @@ layout(binding = SCENE_UNIFORM_BINDING, std140) uniform SceneUniform {
 #import <voxy:lod/hierarchical/node.glsl>
 #import <voxy:lod/hierarchical/screenspace.glsl>
 
+#ifdef VOXY_TRAVERSAL_TRACE
+#import <voxy:lod/section.glsl>
+
+layout(binding = TRAVERSAL_SECTION_METADATA_BUFFER_BINDING, std430) readonly restrict buffer TraversalSectionMetadataBuffer {
+    SectionMeta traversalSectionData[];
+};
+
+layout(binding = TRAVERSAL_DEBUG_BINDING, std430) restrict buffer TraversalDebugBuffer {
+    uint traversalDebug[];
+};
+
+const uint TRACE_RENDER_DISTANCE = 1u;
+const uint TRACE_FRUSTUM = 2u;
+const uint TRACE_HIZ = 3u;
+const uint TRACE_DESCEND_CHILDREN = 4u;
+const uint TRACE_REQUEST_FALLBACK_RENDER = 5u;
+const uint TRACE_RENDER_MESH = 6u;
+const uint TRACE_REQUEST_DESCEND = 7u;
+const uint TRACE_MESH_POS_MISMATCH = 8u;
+const uint TRACE_MESH_ID_OOB = 9u;
+
+bool recordTraversalTrace(uint code, in UnpackedNode node, uint a, uint b, uint c) {
+    atomicAdd(traversalDebug[code], 1u);
+    uint base = 16u + code * TRAVERSAL_TRACE_SAMPLE_STRIDE;
+    if (atomicCompSwap(traversalDebug[base], 0u, 1u) == 0u) {
+        traversalDebug[base + 1u] = node.nodeId;
+        traversalDebug[base + 2u] = node.rawPos.x;
+        traversalDebug[base + 3u] = node.rawPos.y;
+        traversalDebug[base + 4u] = uint(node.pos.x);
+        traversalDebug[base + 5u] = uint(node.pos.y);
+        traversalDebug[base + 6u] = uint(node.pos.z);
+        traversalDebug[base + 7u] = node.lodLevel;
+        traversalDebug[base + 8u] = node.meshPtr;
+        traversalDebug[base + 9u] = node.childPtr;
+        traversalDebug[base + 10u] = node.flags;
+        traversalDebug[base + 11u] = floatBitsToUint(_screenSize);
+        traversalDebug[base + 12u] = floatBitsToUint(minSSS);
+        traversalDebug[base + 13u] = a;
+        traversalDebug[base + 14u] = b;
+        traversalDebug[base + 15u] = c;
+        return true;
+    }
+    return false;
+}
+
+#ifdef VOXY_HIZ_TRACE
+void recordHizTraversalTrace(in UnpackedNode node) {
+    uint pointSample = floatBitsToUint(_hizPointSample);
+    uint minDepth = floatBitsToUint(_minBB.z);
+    uint mipLevel = floatBitsToUint(_hizMipLevel);
+    if (recordTraversalTrace(TRACE_HIZ, node, pointSample, minDepth, mipLevel)) {
+        uint base = 16u + TRACE_HIZ * TRAVERSAL_TRACE_SAMPLE_STRIDE;
+        traversalDebug[base + 16u] = floatBitsToUint(_minBB.x);
+        traversalDebug[base + 17u] = floatBitsToUint(_minBB.y);
+        traversalDebug[base + 18u] = floatBitsToUint(_minBB.z);
+        traversalDebug[base + 19u] = floatBitsToUint(_maxBB.x);
+        traversalDebug[base + 20u] = floatBitsToUint(_maxBB.y);
+        traversalDebug[base + 21u] = floatBitsToUint(_maxBB.z);
+        traversalDebug[base + 22u] = pointSample;
+        traversalDebug[base + 23u] = floatBitsToUint(_hizDepthMargin);
+        traversalDebug[base + 24u] = mipLevel;
+        traversalDebug[base + 25u] = packedHizSize;
+        traversalDebug[base + 26u] = uint(_hizLevelSize.x);
+        traversalDebug[base + 27u] = uint(_hizLevelSize.y);
+        traversalDebug[base + 28u] = uint(_hizMinTexel.x);
+        traversalDebug[base + 29u] = uint(_hizMinTexel.y);
+        traversalDebug[base + 30u] = uint(_hizMaxTexel.x);
+        traversalDebug[base + 31u] = uint(_hizMaxTexel.y);
+    }
+}
+#endif
+
+void validateNodeMeshMapping(in UnpackedNode node) {
+    if (isEmptyMesh(node)) {
+        return;
+    }
+    uint mesh = getMesh(node);
+    if (mesh >= VOXY_TRAVERSAL_TRACE_MAX_SECTIONS) {
+        recordTraversalTrace(TRACE_MESH_ID_OOB, node, mesh, VOXY_TRAVERSAL_TRACE_MAX_SECTIONS, 0u);
+        return;
+    }
+
+    uvec2 meshRawPos = extractRawPos(traversalSectionData[mesh]);
+    if (meshRawPos.x != node.rawPos.x || meshRawPos.y != node.rawPos.y) {
+        recordTraversalTrace(TRACE_MESH_POS_MISMATCH, node, meshRawPos.x, meshRawPos.y, mesh);
+    }
+}
+#endif
+
 //SIMPLE_QUEUE(uvec2, requestQueue, REQUEST_QUEUE_BINDING);
 layout(binding = REQUEST_QUEUE_BINDING, std430) restrict buffer requestQueueStruct {
     uvec2 requestQueueIndex;
@@ -79,6 +168,10 @@ void enqueueSelfForRender(in UnpackedNode node) {
     if (renderQueueIndex < renderQueueMaxSize) {
         lastRenderFrame[getId(node)] = frameId;
         if (!isEmptyMesh(node)) {
+            #ifdef VOXY_TRAVERSAL_TRACE
+            validateNodeMeshMapping(node);
+            #endif
+
             uint renderIndex = atomicAdd(renderQueueIndex, 1);
             if (renderIndex < renderQueueMaxSize) {
                 renderQueue[renderIndex] = getMesh(node);
@@ -125,7 +218,24 @@ void traverse(in UnpackedNode node) {
     setupScreenspace(node);
     //debugDumpNode(node);
 
-    if (outsideFrustum() || isCulledByHiz()) {
+    bool frustumCulled = outsideFrustum();
+    bool hizCulled = false;
+    if (!frustumCulled) {
+        hizCulled = isCulledByHiz();
+    }
+
+    if (frustumCulled || hizCulled) {
+        #ifdef VOXY_TRAVERSAL_TRACE
+        if (hizCulled) {
+            #ifdef VOXY_HIZ_TRACE
+            recordHizTraversalTrace(node);
+            #else
+            recordTraversalTrace(TRACE_HIZ, node, 0u, 0u, 0u);
+            #endif
+        } else {
+            recordTraversalTrace(TRACE_FRUSTUM, node, 0u, 0u, 0u);
+        }
+        #endif
         //printf("culled");
     } else {
         //It is visible, TODO: maybe do a more detailed hiz test? (or make it so that )
@@ -134,6 +244,9 @@ void traverse(in UnpackedNode node) {
         if (node.lodLevel!=0 && shouldDecend()) {
             if (hasChildren(node)) {
                 //printf("A");
+                #ifdef VOXY_TRAVERSAL_TRACE
+                recordTraversalTrace(TRACE_DESCEND_CHILDREN, node, 0u, 0u, 0u);
+                #endif
                 enqueueChildren(node);
             } else {
                 //printf("B");
@@ -149,12 +262,22 @@ void traverse(in UnpackedNode node) {
                 }
 
                 if (shouldRenderSelf) {
+                    #ifdef VOXY_TRAVERSAL_TRACE
+                    recordTraversalTrace(TRACE_REQUEST_FALLBACK_RENDER, node, 1u, 0u, 0u);
+                    #endif
                     enqueueSelfForRender(node);
+                } else {
+                    #ifdef VOXY_TRAVERSAL_TRACE
+                    recordTraversalTrace(TRACE_REQUEST_FALLBACK_RENDER, node, 0u, 0u, 0u);
+                    #endif
                 }
             }
         } else {
             if (hasMesh(node)) {
                 //printf("C");
+                #ifdef VOXY_TRAVERSAL_TRACE
+                recordTraversalTrace(TRACE_RENDER_MESH, node, 0u, 0u, 0u);
+                #endif
                 enqueueSelfForRender(node);
             } else {
                 //printf("D");
@@ -164,7 +287,14 @@ void traverse(in UnpackedNode node) {
 
                 //TODO: Decend into children? maybe add a bitflag saying is bad if the immediate children dont have meshes
                 if (node.lodLevel != 0) {
+                    #ifdef VOXY_TRAVERSAL_TRACE
+                    recordTraversalTrace(TRACE_REQUEST_DESCEND, node, 1u, 0u, 0u);
+                    #endif
                     enqueueChildren(node);
+                } else {
+                    #ifdef VOXY_TRAVERSAL_TRACE
+                    recordTraversalTrace(TRACE_REQUEST_DESCEND, node, 0u, 0u, 0u);
+                    #endif
                 }
             }
         }
@@ -181,6 +311,10 @@ void main() {
         //Check if were inside the render distastance before traversince
         if (isWithinRenderDistance(node)) {
             traverse(node);
+        } else {
+            #ifdef VOXY_TRAVERSAL_TRACE
+            recordTraversalTrace(TRACE_RENDER_DISTANCE, node, 0u, 0u, 0u);
+            #endif
         }
 
         /*
