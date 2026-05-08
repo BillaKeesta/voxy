@@ -13,6 +13,8 @@ import java.util.Arrays;
 import java.util.Random;
 
 public class SoftwareRasterizer {
+    private static final float EDGE_EPSILON = -1.0e-6f;
+
     private final Vector4f scratch = new Vector4f();
 
     private final Vector3f scratch1 = new Vector3f();
@@ -152,7 +154,7 @@ public class SoftwareRasterizer {
                 float w1 = edge(v2, v3, cx, cy)*invArea;
                 float w2 = edge(v3, v1, cx, cy)*invArea;
                 float w3 = 1.0f-w1-w2;
-                if ((w1>0.0f&&w2>0.0f&&w3>0.0f)||(orZero&&w1>=0.0f&&w2>=0.0f&&w3>=0.0f)) {
+                if (w1 >= EDGE_EPSILON && w2 >= EDGE_EPSILON && w3 >= EDGE_EPSILON) {
                     //Dont need to worry about perspective correction afak as it should already be all correct
 
                     //pixel is inside the triangle
@@ -184,15 +186,16 @@ public class SoftwareRasterizer {
             return;
         }
 
-        //Stencil increment first
-        this.framebuffer[index] += (1L<<32);
-
         //Funny jank depth test
         long depthVal = ((long) (((double)z)*((1<<24)-1)))<<(64-24);
         if (depthVal == DEPTH_MASK) depthVal--;//We wanto render _something_ at least
         if (Long.compareUnsigned(this.framebuffer[index],depthVal)<=0) {
             return;//Depth test failed, (using a strictly LESS_THAN comparison)
         }
+
+        // Stencil counts visible fragments. Do this after depth test so shared quad edges do not double count.
+        this.framebuffer[index] += (1L<<32);
+
         //Set the pixels depth value
         this.framebuffer[index] &= ~DEPTH_MASK;
         this.framebuffer[index] |= depthVal;
