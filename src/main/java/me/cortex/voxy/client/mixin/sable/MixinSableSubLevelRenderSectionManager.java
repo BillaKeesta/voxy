@@ -13,7 +13,7 @@ public abstract class MixinSableSubLevelRenderSectionManager {
             method = "<init>",
             at = @At(
                     value = "INVOKE",
-                    target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSectionManager;<init>(Lnet/minecraft/client/multiplayer/ClientLevel;ILnet/caffeinemc/mods/sodium/client/gl/device/CommandList;)V"
+                    target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSectionManager;<init>(Lnet/minecraft/class_638;ILnet/caffeinemc/mods/sodium/client/gl/device/CommandList;)V"
             ),
             index = 1,
             remap = false
