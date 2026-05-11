@@ -5,10 +5,10 @@ import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.common.Logger;
+import me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance;
 import net.minecraft.client.Minecraft;
 
 public final class SableClientRenderDistance {
-    private static final int CHUNKS_PER_SECTION_RENDER_DISTANCE = 32;
     private static final int BLOCKS_PER_CHUNK = 16;
     private static boolean renderDataRefreshUnavailable;
 
@@ -16,7 +16,15 @@ public final class SableClientRenderDistance {
     }
 
     public static int extendVanillaRenderDistanceChunks(int vanillaRenderDistanceChunks) {
-        return Math.max(vanillaRenderDistanceChunks, getSimulatedContraptionRenderDistanceChunks());
+        if (!VoxyConfig.CONFIG.isRenderingEnabled()) {
+            return vanillaRenderDistanceChunks;
+        }
+
+        return SableContraptionRenderDistance.extendVanillaRenderDistanceChunks(
+                vanillaRenderDistanceChunks,
+                VoxyConfig.CONFIG.sectionRenderDistance,
+                VoxyConfig.CONFIG.simulatedContraptionRenderDistancePercent
+        );
     }
 
     public static double getRenderDistanceBlocks(int vanillaRenderDistanceChunks) {
@@ -24,7 +32,7 @@ public final class SableClientRenderDistance {
     }
 
     public static boolean isVoxyRenderDistanceActive() {
-        return getSimulatedContraptionRenderDistanceChunks() > 0;
+        return VoxyConfig.CONFIG.isRenderingEnabled() && VoxyConfig.CONFIG.simulatedContraptionRenderDistancePercent > 0;
     }
 
     public static void refreshSableRenderData() {
@@ -52,19 +60,5 @@ public final class SableClientRenderDistance {
             renderDataRefreshUnavailable = true;
             Logger.warn("Disabling Sable render distance refresh after render data update failed", e);
         }
-    }
-
-    private static int getSimulatedContraptionRenderDistanceChunks() {
-        if (!VoxyConfig.CONFIG.isRenderingEnabled()) {
-            return 0;
-        }
-
-        int percent = Math.max(0, Math.min(100, VoxyConfig.CONFIG.simulatedContraptionRenderDistancePercent));
-        if (percent == 0 || VoxyConfig.CONFIG.sectionRenderDistance <= 0.0F) {
-            return 0;
-        }
-
-        int voxyRenderDistanceChunks = (int) Math.ceil(VoxyConfig.CONFIG.sectionRenderDistance * CHUNKS_PER_SECTION_RENDER_DISTANCE);
-        return (int) Math.ceil(voxyRenderDistanceChunks * (percent / 100.0D));
     }
 }

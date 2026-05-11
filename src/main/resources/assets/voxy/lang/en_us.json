@@ -25,7 +25,7 @@
   "voxy.config.general.renderDistance": "Render distance",
   "voxy.config.general.renderDistance.tooltip": "Render distance of voxy in chunks",
   "voxy.config.general.simulated_contraption_render_distance": "Simulated Contraption render distance",
-  "voxy.config.general.simulated_contraption_render_distance.tooltip": "Defines in what % of Voxy LOD render distance Simulated Contraptions would render",
+  "voxy.config.general.simulated_contraption_render_distance.tooltip": "Render simulated contraptions in this % of a voxy render distance with a base of vanilla render distance",
 
   "voxy.config.general.environmental_fog": "Enable environmental fog",
   "voxy.config.general.environmental_fog.tooltip": "Enables or disables voxy rendering environmental fog",

@@ -47,10 +47,32 @@ public final class SableContraptionRenderDistance {
             return 0.0;
         }
 
-        int renderDistanceChunks = (int) Math.ceil(config.sectionRenderDistance() * CHUNKS_PER_SECTION_RENDER_DISTANCE);
-        int percent = Math.max(0, Math.min(100, config.simulatedContraptionRenderDistancePercent()));
-        int contraptionDistanceChunks = (int) Math.ceil(renderDistanceChunks * (percent / 100.0D));
+        int vanillaRenderDistanceChunks = getVanillaRenderDistanceChunks(level);
+        int contraptionDistanceChunks = extendVanillaRenderDistanceChunks(
+                vanillaRenderDistanceChunks,
+                config.sectionRenderDistance(),
+                config.simulatedContraptionRenderDistancePercent()
+        );
         return contraptionDistanceChunks * BLOCKS_PER_CHUNK;
+    }
+
+    public static int extendVanillaRenderDistanceChunks(int vanillaRenderDistanceChunks, double sectionRenderDistance, int simulatedContraptionRenderDistancePercent) {
+        int vanillaDistanceChunks = Math.max(0, vanillaRenderDistanceChunks);
+        int percent = Math.max(0, Math.min(100, simulatedContraptionRenderDistancePercent));
+        if (percent == 0) {
+            return vanillaDistanceChunks;
+        }
+
+        int voxyRenderDistanceChunks = (int) Math.ceil(sectionRenderDistance * CHUNKS_PER_SECTION_RENDER_DISTANCE);
+        if (sectionRenderDistance <= 0.0) {
+            return vanillaDistanceChunks;
+        }
+
+        return Math.max(0, (int) Math.ceil(vanillaDistanceChunks + ((voxyRenderDistanceChunks - vanillaDistanceChunks) * (percent / 100.0D))));
+    }
+
+    private static int getVanillaRenderDistanceChunks(ServerLevel level) {
+        return Math.max(0, level.getServer().getPlayerList().getViewDistance());
     }
 
     public static void updateClientConfig(boolean enabled, double sectionRenderDistance, int simulatedContraptionRenderDistancePercent) {
